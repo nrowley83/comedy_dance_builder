@@ -1,0 +1,1256 @@
+import { useState, useEffect, useMemo } from "react";
+import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download } from "lucide-react";
+import { supabase, supabaseConfigured } from "./lib/supabase";
+import * as db from "./lib/db";
+
+const fmtTime = (totalSeconds) => {
+  const s = Math.max(0, totalSeconds || 0);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+};
+
+function computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds) {
+  return pieces.map(piece => {
+    const ts = tracksByPiece[piece.id] || [];
+    if (ts.length === 0) return { piece, status: "no-tracks", missing: [] };
+    const missing = [];
+    ts.forEach(t => {
+      const asg = assignmentsByTrack[t.id] || [];
+      const covered = asg.length > 0 && asg.some(a => availableIds.has(a.personId));
+      if (!covered) missing.push(t);
+    });
+    return { piece, status: missing.length === 0 ? "doable" : "missing", missing };
+  });
+}
+
+const countBits = (x) => { let c = 0; while (x) { c += x & 1; x >>= 1; } return c; };
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function generateShowOptions(doablePieces, targetSeconds, maxResults = 10) {
+  const n = doablePieces.length;
+  if (n === 0) return [];
+  if (targetSeconds == null) {
+    return [{ pieces: doablePieces, total: doablePieces.reduce((s, p) => s + (p.length || 0), 0) }];
+  }
+  if (n <= 20) {
+    const pow2idx = {};
+    for (let i = 0; i < n; i++) pow2idx[1 << i] = i;
+    const size = 1 << n;
+    const sums = new Array(size).fill(0);
+    for (let mask = 1; mask < size; mask++) {
+      const low = mask & -mask;
+      const idx = pow2idx[low];
+      sums[mask] = sums[mask ^ low] + (doablePieces[idx].length || 0);
+    }
+    const options = [];
+    for (let mask = 1; mask < size; mask++) {
+      if (sums[mask] <= targetSeconds) options.push({ mask, total: sums[mask] });
+    }
+    options.sort((a, b) => b.total - a.total || countBits(a.mask) - countBits(b.mask));
+    return options.slice(0, maxResults).map(o => ({
+      pieces: doablePieces.filter((_, i) => (o.mask & (1 << i)) !== 0),
+      total: o.total,
+    }));
+  }
+  const orderings = [
+    [...doablePieces].sort((a, b) => (b.length || 0) - (a.length || 0)),
+    [...doablePieces].sort((a, b) => (a.length || 0) - (b.length || 0)),
+  ];
+  for (let i = 0; i < 10; i++) orderings.push(shuffle([...doablePieces]));
+  const seen = new Set();
+  const results = [];
+  orderings.forEach(order => {
+    let total = 0;
+    const chosen = [];
+    order.forEach(p => {
+      if (total + (p.length || 0) <= targetSeconds) { chosen.push(p); total += (p.length || 0); }
+    });
+    const key = chosen.map(p => p.id).sort().join(",");
+    if (chosen.length > 0 && !seen.has(key)) { seen.add(key); results.push({ pieces: chosen, total }); }
+  });
+  results.sort((a, b) => b.total - a.total);
+  return results.slice(0, maxResults);
+}
+
+export default function CallBoard() {
+  const [ready, setReady] = useState(false);
+  const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
+  const [error, setError] = useState(null);
+  const [tab, setTab] = useState("builder");
+  const [data, setData] = useState({ people: [], pieces: [], tracks: [], costumes: [], assignments: [] });
+
+  const refresh = async () => {
+    try {
+      const next = await db.fetchAll();
+      setData(next);
+      setError(null);
+    } catch (e) {
+      setError(e.message || "Something went wrong talking to the database.");
+    }
+  };
+
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (session) refresh().then(() => setReady(true));
+  }, [session]);
+
+  const { people, pieces, tracks, costumes, assignments } = data;
+
+  const pieceById = useMemo(() => Object.fromEntries(pieces.map(p => [p.id, p])), [pieces]);
+  const tracksByPiece = useMemo(() => {
+    const m = {};
+    tracks.forEach(t => { (m[t.pieceId] = m[t.pieceId] || []).push(t); });
+    return m;
+  }, [tracks]);
+  const costumesByPiece = useMemo(() => {
+    const m = {};
+    costumes.forEach(c => { (m[c.pieceId] = m[c.pieceId] || []).push(c); });
+    return m;
+  }, [costumes]);
+  const assignmentsByTrack = useMemo(() => {
+    const m = {};
+    assignments.forEach(a => { (m[a.trackId] = m[a.trackId] || []).push(a); });
+    return m;
+  }, [assignments]);
+  const assignmentsByPerson = useMemo(() => {
+    const m = {};
+    assignments.forEach(a => { (m[a.personId] = m[a.personId] || []).push(a); });
+    return m;
+  }, [assignments]);
+  const trackById = useMemo(() => Object.fromEntries(tracks.map(t => [t.id, t])), [tracks]);
+
+  const personHasPieceConflict = (personId, pieceId, excludeTrackId) => {
+    const theirAssignments = assignmentsByPerson[personId] || [];
+    return theirAssignments.some(a => {
+      if (a.trackId === excludeTrackId) return false;
+      const t = trackById[a.trackId];
+      return t && t.pieceId === pieceId;
+    });
+  };
+
+  // Every mutation re-fetches; the data sets here are small and this keeps
+  // cascade deletes (handled by the DB's ON DELETE CASCADE) trivially correct.
+  const run = (fn) => async (...args) => {
+    try {
+      await fn(...args);
+      await refresh();
+    } catch (e) {
+      setError(e.message || "Something went wrong talking to the database.");
+    }
+  };
+
+  const actions = {
+    addPerson: run(db.addPerson),
+    deletePerson: run(db.deletePerson),
+    addPiece: run(db.addPiece),
+    deletePiece: run(db.deletePiece),
+    updatePieceType: run(db.updatePieceType),
+    addTrack: run(db.addTrack),
+    deleteTrack: run(db.deleteTrack),
+    addCostume: run(db.addCostume),
+    deleteCostume: run(db.deleteCostume),
+    addAssignment: run(db.addAssignment),
+    deleteAssignment: run(db.deleteAssignment),
+  };
+
+  if (!supabaseConfigured) {
+    return (
+      <div className="cb-root cb-loading">
+        <style>{CSS}</style>
+        <div className="cb-setup">
+          <h2>Almost there</h2>
+          <p>This app needs a Supabase project to store data. Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> (locally in <code>.env.local</code>, or as environment variables in your Vercel project settings), then reload.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (session === undefined) {
+    return (
+      <div className="cb-root cb-loading">
+        <style>{CSS}</style>
+        <div className="cb-loading-text">Checking your session…</div>
+      </div>
+    );
+  }
+
+  if (session === null) {
+    return <LoginScreen />;
+  }
+
+  if (!ready) {
+    return (
+      <div className="cb-root cb-loading">
+        <style>{CSS}</style>
+        <div className="cb-loading-text">Loading the board…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cb-root">
+      <style>{CSS}</style>
+      <header className="cb-header">
+        <div className="cb-title-row">
+          <div className="cb-title-block">
+            <div className="cb-eyebrow">Backstage</div>
+            <h1 className="cb-title">The Call Board</h1>
+          </div>
+          <button className="cb-signout" onClick={() => supabase.auth.signOut()}>
+            <LogOut size={14} /> Sign out
+          </button>
+        </div>
+        <nav className="cb-tabs">
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              className={"cb-tab" + (tab === t.key ? " cb-tab-active" : "")}
+              onClick={() => setTab(t.key)}
+            >
+              <t.icon size={15} strokeWidth={2} />
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      {error && (
+        <div className="cb-error-banner">
+          <AlertCircle size={14} /> {error}
+        </div>
+      )}
+
+      <main className="cb-main">
+        {tab === "builder" && (
+          <BuildShowWizard
+            people={people} pieces={pieces} tracksByPiece={tracksByPiece}
+            assignmentsByTrack={assignmentsByTrack} costumesByPiece={costumesByPiece}
+          />
+        )}
+        {tab === "people" && (
+          <PeopleTab
+            people={people} onAdd={actions.addPerson} onDelete={actions.deletePerson}
+            assignmentsByPerson={assignmentsByPerson} trackById={trackById} pieceById={pieceById}
+          />
+        )}
+        {tab === "pieces" && (
+          <PiecesTab
+            pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece} onTypeChange={actions.updatePieceType}
+            tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+          />
+        )}
+        {tab === "tracks" && (
+          <TracksTab
+            pieces={pieces} tracks={tracks} onAddTrack={actions.addTrack} onDeleteTrack={actions.deleteTrack}
+            people={people} onAssignPerson={actions.addAssignment} onRemoveAssignment={actions.deleteAssignment}
+            assignmentsByTrack={assignmentsByTrack} personHasPieceConflict={personHasPieceConflict}
+          />
+        )}
+        {tab === "costumes" && (
+          <CostumesTab
+            pieces={pieces} costumes={costumes} onAdd={actions.addCostume} onDelete={actions.deleteCostume}
+            costumesByPiece={costumesByPiece}
+          />
+        )}
+        {tab === "reports" && (
+          <ReportsTab
+            people={people} pieces={pieces} assignmentsByPerson={assignmentsByPerson} trackById={trackById}
+            pieceById={pieceById} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+            assignmentsByTrack={assignmentsByTrack}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error) setErr(error.message);
+  };
+
+  return (
+    <div className="cb-root cb-loading">
+      <style>{CSS}</style>
+      <form className="cb-login" onSubmit={submit}>
+        <div className="cb-eyebrow">Backstage</div>
+        <h1 className="cb-title cb-login-title">The Call Board</h1>
+        <input className="cb-input" type="email" placeholder="Email" autoComplete="username"
+          value={email} onChange={e => setEmail(e.target.value)} required />
+        <input className="cb-input" type="password" placeholder="Password" autoComplete="current-password"
+          value={password} onChange={e => setPassword(e.target.value)} required />
+        <button className="cb-btn cb-btn-accent cb-login-btn" type="submit" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+        {err && <div className="cb-conflict"><AlertCircle size={14} /> {err}</div>}
+      </form>
+    </div>
+  );
+}
+
+const TABS = [
+  { key: "builder", label: "Build a show", icon: Wand2 },
+  { key: "people", label: "People", icon: Users },
+  { key: "pieces", label: "Pieces", icon: Music },
+  { key: "tracks", label: "Tracks", icon: Route },
+  { key: "costumes", label: "Costumes", icon: Shirt },
+  { key: "reports", label: "Reports", icon: ClipboardList },
+];
+
+/* ---------------- shared bits ---------------- */
+
+function CueTag({ n, prefix }) {
+  return <span className="cb-cue">{prefix}-{String(n).padStart(3, "0")}</span>;
+}
+function EmptyState({ text }) {
+  return <div className="cb-empty">{text}</div>;
+}
+function AddRow({ placeholder, onAdd, buttonLabel = "Add" }) {
+  const [val, setVal] = useState("");
+  const submit = () => {
+    const v = val.trim();
+    if (!v) return;
+    onAdd(v);
+    setVal("");
+  };
+  return (
+    <div className="cb-addrow">
+      <input className="cb-input" placeholder={placeholder} value={val}
+        onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === "Enter") submit(); }} />
+      <button className="cb-btn cb-btn-accent" onClick={submit}><Plus size={15} /> {buttonLabel}</button>
+    </div>
+  );
+}
+
+/* ---------------- People ---------------- */
+
+function PeopleTab({ people, onAdd, onDelete, assignmentsByPerson, trackById, pieceById }) {
+  return (
+    <section>
+      <div className="cb-section-head"><h2>People</h2><span className="cb-count">{people.length}</span></div>
+      <AddRow placeholder="Performer name" onAdd={onAdd} buttonLabel="Add person" />
+      {people.length === 0 && <EmptyState text="No one on the roster yet. Add your first performer above." />}
+      <div className="cb-card-grid">
+        {people.map((p, i) => {
+          const theirs = assignmentsByPerson[p.id] || [];
+          return (
+            <div className="cb-card" key={p.id}>
+              <div className="cb-card-top">
+                <CueTag n={i + 1} prefix="P" />
+                <button className="cb-icon-btn" onClick={() => onDelete(p.id)} title="Remove person"><Trash2 size={14} /></button>
+              </div>
+              <div className="cb-card-name">{p.name}</div>
+              <div className="cb-card-sub">
+                {theirs.length === 0 ? (
+                  <span className="cb-dim">Not cast in anything yet</span>
+                ) : (
+                  <ul className="cb-taglist">
+                    {theirs.map(a => {
+                      const t = trackById[a.trackId];
+                      const pc = t ? pieceById[t.pieceId] : null;
+                      if (!t || !pc) return null;
+                      return <li key={a.id}>{pc.name} <span className="cb-dim">— {t.name}</span></li>;
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- Pieces ---------------- */
+
+const PIECE_TYPES = [
+  { value: "normal", label: "Normal" },
+  { value: "opener", label: "Opener" },
+  { value: "closer", label: "Closer" },
+];
+
+function PiecesTab({ pieces, onAdd, onDelete, onTypeChange, tracksByPiece, costumesByPiece }) {
+  const [name, setName] = useState("");
+  const [min, setMin] = useState("");
+  const [sec, setSec] = useState("");
+  const [type, setType] = useState("normal");
+
+  const add = () => {
+    const n = name.trim();
+    if (!n) return;
+    const total = (parseInt(min || 0, 10) * 60) + parseInt(sec || 0, 10);
+    onAdd(n, total, type);
+    setName(""); setMin(""); setSec(""); setType("normal");
+  };
+
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Pieces</h2><span className="cb-count">{pieces.length}</span></div>
+      <div className="cb-addrow cb-addrow-piece">
+        <input className="cb-input" placeholder="Piece name" value={name}
+          onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} />
+        <input className="cb-input cb-input-num" placeholder="min" type="number" min="0" value={min}
+          onChange={e => setMin(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} />
+        <span className="cb-colon">:</span>
+        <input className="cb-input cb-input-num" placeholder="sec" type="number" min="0" max="59" value={sec}
+          onChange={e => setSec(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} />
+        <select className="cb-select" value={type} onChange={e => setType(e.target.value)}>
+          {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <button className="cb-btn cb-btn-accent" onClick={add}><Plus size={15} /> Add piece</button>
+      </div>
+      {pieces.length === 0 && <EmptyState text="No pieces yet. Add one above with its run time." />}
+      <div className="cb-card-grid">
+        {pieces.map((p, i) => (
+          <div className="cb-card" key={p.id}>
+            <div className="cb-card-top">
+              <CueTag n={i + 1} prefix="PC" />
+              <button className="cb-icon-btn" onClick={() => onDelete(p.id)} title="Remove piece"><Trash2 size={14} /></button>
+            </div>
+            <div className="cb-card-name">{p.name}</div>
+            <div className="cb-card-sub">
+              <span className="cb-mono cb-accent-text">{fmtTime(p.length)}</span>
+              <span className="cb-dim"> · {(tracksByPiece[p.id] || []).length} track{(tracksByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+              <span className="cb-dim"> · {(costumesByPiece[p.id] || []).length} costume{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+            </div>
+            <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
+              {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- Tracks (+ assignments) ---------------- */
+
+function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, people, onAssignPerson, onRemoveAssignment, assignmentsByTrack, personHasPieceConflict }) {
+  const [newTrackName, setNewTrackName] = useState({});
+  const [pickPerson, setPickPerson] = useState({});
+  const [conflictMsg, setConflictMsg] = useState(null);
+
+  const addTrack = (pieceId) => {
+    const nm = (newTrackName[pieceId] || "").trim();
+    if (!nm) return;
+    onAddTrack(nm, pieceId);
+    setNewTrackName({ ...newTrackName, [pieceId]: "" });
+  };
+
+  const assignPerson = (trackId, pieceId, personId) => {
+    if (!personId) return;
+    if (personHasPieceConflict(personId, pieceId, trackId)) {
+      const p = people.find(pp => pp.id === personId);
+      setConflictMsg(`${p ? p.name : "That person"} is already on another track in this piece.`);
+      setTimeout(() => setConflictMsg(null), 3500);
+      return;
+    }
+    onAssignPerson(personId, trackId);
+  };
+
+  if (pieces.length === 0) {
+    return <section><div className="cb-section-head"><h2>Tracks</h2></div><EmptyState text="Add a piece first — tracks belong to a piece." /></section>;
+  }
+
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Tracks</h2><span className="cb-count">{tracks.length}</span></div>
+      {conflictMsg && <div className="cb-conflict"><AlertCircle size={14} /> {conflictMsg}</div>}
+      <div className="cb-piece-groups">
+        {pieces.map(piece => {
+          const theseTracks = tracks.filter(t => t.pieceId === piece.id);
+          return (
+            <div className="cb-piece-group" key={piece.id}>
+              <div className="cb-piece-group-head">
+                <span className="cb-piece-group-name">{piece.name}</span>
+                <span className="cb-mono cb-dim">{fmtTime(piece.length)}</span>
+              </div>
+              <div className="cb-addrow">
+                <input className="cb-input" placeholder="Track name (e.g. Lead, Ensemble A)"
+                  value={newTrackName[piece.id] || ""}
+                  onChange={e => setNewTrackName({ ...newTrackName, [piece.id]: e.target.value })}
+                  onKeyDown={e => { if (e.key === "Enter") addTrack(piece.id); }} />
+                <button className="cb-btn cb-btn-accent" onClick={() => addTrack(piece.id)}><Plus size={15} /> Add track</button>
+              </div>
+              {theseTracks.length === 0 && <EmptyState text="No tracks in this piece yet." />}
+              {theseTracks.map((t, i) => {
+                const asg = assignmentsByTrack[t.id] || [];
+                return (
+                  <div className="cb-track-row" key={t.id}>
+                    <div className="cb-track-row-top">
+                      <span className="cb-mono cb-cue-inline">T-{String(i + 1).padStart(2, "0")}</span>
+                      <span className="cb-track-name">{t.name}</span>
+                      <button className="cb-icon-btn" onClick={() => onDeleteTrack(t.id)} title="Remove track"><Trash2 size={14} /></button>
+                    </div>
+                    <div className="cb-track-people">
+                      {asg.map(a => {
+                        const person = people.find(pp => pp.id === a.personId);
+                        return (
+                          <span className="cb-chip" key={a.id}>
+                            {person ? person.name : "—"}
+                            <button className="cb-chip-x" onClick={() => onRemoveAssignment(a.id)}><X size={11} /></button>
+                          </span>
+                        );
+                      })}
+                      <select className="cb-select cb-select-inline" value={pickPerson[t.id] || ""}
+                        onChange={e => { assignPerson(t.id, piece.id, e.target.value); setPickPerson({ ...pickPerson, [t.id]: "" }); }}>
+                        <option value="">+ assign person…</option>
+                        {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- Costumes ---------------- */
+
+function CostumesTab({ pieces, costumes, onAdd, onDelete, costumesByPiece }) {
+  const [newName, setNewName] = useState({});
+  const addCostume = (pieceId) => {
+    const nm = (newName[pieceId] || "").trim();
+    if (!nm) return;
+    onAdd(nm, pieceId);
+    setNewName({ ...newName, [pieceId]: "" });
+  };
+  if (pieces.length === 0) {
+    return <section><div className="cb-section-head"><h2>Costumes</h2></div><EmptyState text="Add a piece first — costumes belong to a piece." /></section>;
+  }
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Costumes</h2><span className="cb-count">{costumes.length}</span></div>
+      <div className="cb-piece-groups">
+        {pieces.map(piece => {
+          const these = costumesByPiece[piece.id] || [];
+          return (
+            <div className="cb-piece-group" key={piece.id}>
+              <div className="cb-piece-group-head"><span className="cb-piece-group-name">{piece.name}</span></div>
+              <div className="cb-addrow">
+                <input className="cb-input" placeholder="Costume piece (e.g. Red skirt, Top hat)"
+                  value={newName[piece.id] || ""}
+                  onChange={e => setNewName({ ...newName, [piece.id]: e.target.value })}
+                  onKeyDown={e => { if (e.key === "Enter") addCostume(piece.id); }} />
+                <button className="cb-btn cb-btn-accent" onClick={() => addCostume(piece.id)}><Plus size={15} /> Add costume</button>
+              </div>
+              {these.length === 0 ? (
+                <EmptyState text="No costume pieces logged for this number yet." />
+              ) : (
+                <div className="cb-chiplist">
+                  {these.map(c => (
+                    <span className="cb-chip" key={c.id}>{c.name}<button className="cb-chip-x" onClick={() => onDelete(c.id)}><X size={11} /></button></span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- Reports ---------------- */
+
+function ReportsTab({ people, pieces, assignmentsByPerson, trackById, pieceById, costumesByPiece, tracksByPiece, assignmentsByTrack }) {
+  const [reportTab, setReportTab] = useState("coverage");
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Reports</h2></div>
+      <div className="cb-subtabs">
+        <button className={"cb-subtab" + (reportTab === "coverage" ? " cb-subtab-active" : "")} onClick={() => setReportTab("coverage")}>Cast coverage</button>
+        <button className={"cb-subtab" + (reportTab === "costume" ? " cb-subtab-active" : "")} onClick={() => setReportTab("costume")}>Costume list</button>
+        <button className={"cb-subtab" + (reportTab === "runtime" ? " cb-subtab-active" : "")} onClick={() => setReportTab("runtime")}>Run time</button>
+        <button className={"cb-subtab" + (reportTab === "cast" ? " cb-subtab-active" : "")} onClick={() => setReportTab("cast")}>Who's in what</button>
+      </div>
+      {reportTab === "coverage" && <CastCoverageReport people={people} pieces={pieces} tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack} />}
+      {reportTab === "cast" && <CastReport people={people} assignmentsByPerson={assignmentsByPerson} trackById={trackById} pieceById={pieceById} />}
+      {reportTab === "runtime" && <RuntimeReport pieces={pieces} />}
+      {reportTab === "costume" && <CostumeReport pieces={pieces} costumesByPiece={costumesByPiece} />}
+    </section>
+  );
+}
+
+function CastReport({ people, assignmentsByPerson, trackById, pieceById }) {
+  if (people.length === 0) return <EmptyState text="Add people first to see who's cast where." />;
+  return (
+    <div className="cb-report">
+      <p className="cb-report-lede">See what every performer is currently cast in — useful for spotting who's free.</p>
+      <div className="cb-card-grid">
+        {people.map(p => {
+          const theirs = assignmentsByPerson[p.id] || [];
+          return (
+            <div className="cb-card" key={p.id}>
+              <div className="cb-card-name">{p.name}</div>
+              <div className="cb-card-sub">
+                {theirs.length === 0 ? (
+                  <span className="cb-dim">Available — not cast in anything</span>
+                ) : (
+                  <ul className="cb-taglist">
+                    {theirs.map(a => {
+                      const t = trackById[a.trackId];
+                      const pc = t ? pieceById[t.pieceId] : null;
+                      if (!t || !pc) return null;
+                      return <li key={a.id}>{pc.name} <span className="cb-dim">— {t.name}</span></li>;
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RuntimeReport({ pieces }) {
+  const [selected, setSelected] = useState({});
+  const [target, setTarget] = useState("");
+  if (pieces.length === 0) return <EmptyState text="Add pieces with run times to build a set here." />;
+  const total = pieces.reduce((sum, p) => sum + (selected[p.id] ? (p.length || 0) : 0), 0);
+  const targetSeconds = target ? parseInt(target, 10) * 60 : null;
+  const over = targetSeconds != null && total > targetSeconds;
+  return (
+    <div className="cb-report">
+      <p className="cb-report-lede">Check off pieces to build a set and see if it fits your slot.</p>
+      <div className="cb-runtime-target">
+        <label>Target length (minutes)</label>
+        <input className="cb-input cb-input-num" type="number" min="0" value={target} onChange={e => setTarget(e.target.value)} placeholder="e.g. 20" />
+      </div>
+      <div className="cb-runtime-list">
+        {pieces.map(p => (
+          <label className="cb-runtime-row" key={p.id}>
+            <input type="checkbox" checked={!!selected[p.id]} onChange={e => setSelected({ ...selected, [p.id]: e.target.checked })} />
+            <span className="cb-runtime-name">{p.name}</span>
+            <span className="cb-mono cb-dim">{fmtTime(p.length)}</span>
+          </label>
+        ))}
+      </div>
+      <div className={"cb-runtime-total" + (over ? " cb-runtime-over" : "")}>
+        <span>Total selected</span>
+        <span className="cb-mono cb-accent-text">{fmtTime(total)}</span>
+        {targetSeconds != null && (
+          <span className="cb-dim">{over ? `— ${fmtTime(total - targetSeconds)} over target` : `— ${fmtTime(targetSeconds - total)} to spare`}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CostumeReport({ pieces, costumesByPiece }) {
+  const [selected, setSelected] = useState({});
+  if (pieces.length === 0) return <EmptyState text="Add pieces and costume pieces first." />;
+  const chosen = pieces.filter(p => selected[p.id]);
+  return (
+    <div className="cb-report">
+      <p className="cb-report-lede">Pick the pieces in your lineup to pull the full costume list.</p>
+      <div className="cb-runtime-list">
+        {pieces.map(p => (
+          <label className="cb-runtime-row" key={p.id}>
+            <input type="checkbox" checked={!!selected[p.id]} onChange={e => setSelected({ ...selected, [p.id]: e.target.checked })} />
+            <span className="cb-runtime-name">{p.name}</span>
+            <span className="cb-dim">{(costumesByPiece[p.id] || []).length} item{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+          </label>
+        ))}
+      </div>
+      {chosen.length > 0 && (
+        <div className="cb-piece-groups">
+          {chosen.map(p => {
+            const items = costumesByPiece[p.id] || [];
+            return (
+              <div className="cb-piece-group" key={p.id}>
+                <div className="cb-piece-group-head"><span className="cb-piece-group-name">{p.name}</span></div>
+                {items.length === 0 ? (
+                  <EmptyState text="No costume pieces logged for this number." />
+                ) : (
+                  <div className="cb-chiplist">{items.map(c => <span className="cb-chip cb-chip-static" key={c.id}>{c.name}</span>)}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeoplePicker({ people, selected, setSelected }) {
+  const allOn = people.length > 0 && people.every(p => selected[p.id]);
+  const toggleAll = () => setSelected(allOn ? {} : Object.fromEntries(people.map(p => [p.id, true])));
+  return (
+    <div className="cb-picker">
+      <div className="cb-picker-head">
+        <span className="cb-report-label">Available cast</span>
+        <button className="cb-linklike" onClick={toggleAll}>{allOn ? "Clear all" : "Select all"}</button>
+      </div>
+      <div className="cb-picker-grid">
+        {people.map(p => (
+          <label className="cb-picker-chip" key={p.id}>
+            <input type="checkbox" checked={!!selected[p.id]} onChange={e => setSelected({ ...selected, [p.id]: e.target.checked })} />
+            {p.name}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CastCoverageReport({ people, pieces, tracksByPiece, assignmentsByTrack }) {
+  const [selected, setSelected] = useState({});
+  if (people.length === 0) return <EmptyState text="Add people first, then pick who's available to see what you can perform." />;
+  if (pieces.length === 0) return <EmptyState text="Add pieces and tracks first." />;
+  const availableIds = new Set(Object.keys(selected).filter(id => selected[id]));
+  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds);
+  const doable = coverage.filter(c => c.status === "doable");
+  const missing = coverage.filter(c => c.status === "missing");
+  const noTracks = coverage.filter(c => c.status === "no-tracks");
+  const anySelected = availableIds.size > 0;
+  return (
+    <div className="cb-report">
+      <p className="cb-report-lede">Check off who's actually available and see which pieces are fully covered.</p>
+      <PeoplePicker people={people} selected={selected} setSelected={setSelected} />
+      {!anySelected ? (
+        <EmptyState text="Select at least one available person to see coverage." />
+      ) : (
+        <>
+          <div className="cb-coverage-block">
+            <div className="cb-coverage-head cb-coverage-good"><CheckCircle2 size={15} /> Doable with this cast ({doable.length})</div>
+            {doable.length === 0 ? (
+              <EmptyState text="No piece is fully covered by the selected people yet." />
+            ) : (
+              <div className="cb-card-grid">
+                {doable.map(c => (
+                  <div className="cb-card" key={c.piece.id}>
+                    <div className="cb-card-name">{c.piece.name}</div>
+                    <div className="cb-card-sub cb-mono cb-accent-text">{fmtTime(c.piece.length)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {missing.length > 0 && (
+            <div className="cb-coverage-block">
+              <div className="cb-coverage-head cb-coverage-bad"><CircleDashed size={15} /> Not covered yet ({missing.length})</div>
+              <div className="cb-card-grid">
+                {missing.map(c => (
+                  <div className="cb-card" key={c.piece.id}>
+                    <div className="cb-card-name">{c.piece.name}</div>
+                    <div className="cb-card-sub"><span className="cb-dim">Missing: </span>{c.missing.map(t => t.name).join(", ")}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {noTracks.length > 0 && (
+            <div className="cb-coverage-block">
+              <div className="cb-coverage-head"><span className="cb-dim">No tracks defined yet ({noTracks.length})</span></div>
+              <div className="cb-card-grid">
+                {noTracks.map(c => (
+                  <div className="cb-card" key={c.piece.id}>
+                    <div className="cb-card-name">{c.piece.name}</div>
+                    <div className="cb-card-sub cb-dim">Add tracks to this piece to check coverage</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Build a Show (wizard) ---------------- */
+
+function parseMMSS(str) {
+  const m = /^(\d{1,3}):([0-5]\d)$/.exec((str || "").trim());
+  if (!m) return null;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+// Openers/closers are fixed to the first/last slot; the remaining budget is
+// filled with Normal-type pieces via the same subset-sum search used elsewhere.
+function buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, maxResults = 10) {
+  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, castIds);
+  const doable = coverage.filter(c => c.status === "doable").map(c => c.piece);
+  const missing = coverage.filter(c => c.status === "missing").map(c => c.piece);
+
+  const openers = doable.filter(p => p.type === "opener");
+  const closers = doable.filter(p => p.type === "closer");
+  const normals = doable.filter(p => (p.type || "normal") === "normal");
+
+  const openerOptions = noOpener ? [null] : openers;
+  const closerOptions = noCloser ? [null] : closers;
+
+  if (!noOpener && openers.length === 0) {
+    return { doable, missing, options: [], blocked: "opener" };
+  }
+  if (!noCloser && closers.length === 0) {
+    return { doable, missing, options: [], blocked: "closer" };
+  }
+
+  const seen = new Set();
+  const results = [];
+  openerOptions.forEach(opener => {
+    closerOptions.forEach(closer => {
+      const used = (opener?.length || 0) + (closer?.length || 0);
+      const remaining = targetSeconds - used;
+      if (remaining < 0) return;
+      const combos = generateShowOptions(normals, remaining, 8);
+      const base = combos.length > 0 ? combos : [{ pieces: [], total: 0 }];
+      base.forEach(combo => {
+        const orderedPieces = [opener, ...combo.pieces, closer].filter(Boolean);
+        if (orderedPieces.length === 0) return;
+        const key = orderedPieces.map(p => p.id).join(">");
+        if (seen.has(key)) return;
+        seen.add(key);
+        results.push({ pieces: orderedPieces, total: used + combo.total, opener, closer });
+      });
+    });
+  });
+
+  results.sort((a, b) => b.total - a.total);
+  return { doable, missing, options: results.slice(0, maxResults), blocked: null };
+}
+
+function csvCell(v) {
+  const s = String(v == null ? "" : v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function csvRow(cells) { return cells.map(csvCell).join(","); }
+
+function downloadCsv(filename, content) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, costumesByPiece, castIds) {
+  const personById = Object.fromEntries(people.map(p => [p.id, p]));
+  const lines = [];
+
+  lines.push(csvRow(["Running Order"]));
+  lines.push(csvRow(["Order", "Sketch", "Type", "Runtime"]));
+  option.pieces.forEach((p, i) => {
+    lines.push(csvRow([i + 1, p.name, p.type || "normal", fmtTime(p.length)]));
+  });
+  lines.push("");
+
+  lines.push(csvRow(["Cast & Tracks"]));
+  lines.push(csvRow(["Sketch", "Track", "Person"]));
+  option.pieces.forEach(p => {
+    const ts = tracksByPiece[p.id] || [];
+    ts.forEach(t => {
+      const asg = (assignmentsByTrack[t.id] || []).filter(a => castIds.has(a.personId));
+      if (asg.length === 0) {
+        lines.push(csvRow([p.name, t.name, ""]));
+      } else {
+        asg.forEach(a => {
+          const person = personById[a.personId];
+          lines.push(csvRow([p.name, t.name, person ? person.name : ""]));
+        });
+      }
+    });
+  });
+  lines.push("");
+
+  lines.push(csvRow(["Costumes"]));
+  lines.push(csvRow(["Sketch", "Costume Item"]));
+  option.pieces.forEach(p => {
+    const items = costumesByPiece[p.id] || [];
+    if (items.length === 0) {
+      lines.push(csvRow([p.name, ""]));
+    } else {
+      items.forEach(c => lines.push(csvRow([p.name, c.name])));
+    }
+  });
+
+  downloadCsv(`running-order-${fmtTime(option.total).replace(":", "m")}s.csv`, lines.join("\n"));
+}
+
+const TYPE_BADGE_LABEL = { opener: "Opener", closer: "Closer" };
+
+function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, costumesByPiece, people, castIds }) {
+  const [showCostumes, setShowCostumes] = useState(false);
+  const costumeMap = {};
+  option.pieces.forEach(p => { costumeMap[p.id] = costumesByPiece[p.id] || []; });
+  const totalCostumes = Object.values(costumeMap).reduce((s, arr) => s + arr.length, 0);
+
+  return (
+    <div className="cb-card cb-show-option">
+      <div className="cb-card-top">
+        <CueTag n={index + 1} prefix="SHOW" />
+        <span className="cb-mono cb-accent-text">{fmtTime(option.total)}</span>
+      </div>
+      <ul className="cb-taglist cb-show-piece-list">
+        {option.pieces.map(p => (
+          <li key={p.id}>
+            <span>{p.name}{TYPE_BADGE_LABEL[p.type] && <span className="cb-type-badge"> {TYPE_BADGE_LABEL[p.type]}</span>}</span>
+            <span className="cb-dim cb-mono">{fmtTime(p.length)}</span>
+          </li>
+        ))}
+      </ul>
+      <button className="cb-linklike cb-show-costume-toggle" onClick={() => setShowCostumes(s => !s)}>
+        {showCostumes ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        Costume list ({totalCostumes} item{totalCostumes === 1 ? "" : "s"})
+      </button>
+      {showCostumes && (
+        <div className="cb-show-costumes">
+          {option.pieces.map(p => {
+            const items = costumeMap[p.id];
+            if (items.length === 0) return null;
+            return <div key={p.id} className="cb-show-costume-group"><span className="cb-dim">{p.name}:</span> {items.map(c => c.name).join(", ")}</div>;
+          })}
+          {totalCostumes === 0 && <span className="cb-dim">No costume pieces logged for this lineup.</span>}
+        </div>
+      )}
+      <button
+        className="cb-btn cb-export-btn"
+        onClick={() => exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, costumesByPiece, castIds)}
+      >
+        <Download size={14} /> Export CSV
+      </button>
+    </div>
+  );
+}
+
+function CastDropdownPicker({ people, castIds, onAdd, onRemove }) {
+  const available = people.filter(p => !castIds.has(p.id));
+  const cast = people.filter(p => castIds.has(p.id));
+  return (
+    <div>
+      <div className="cb-addrow">
+        <select className="cb-input cb-select-full" value="" onChange={e => e.target.value && onAdd(e.target.value)}>
+          <option value="">Add a performer…</option>
+          {available.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
+      {cast.length === 0 ? (
+        <EmptyState text="No one added yet — pick people from the dropdown above." />
+      ) : (
+        <div className="cb-chiplist">
+          {cast.map(p => (
+            <span className="cb-chip" key={p.id}>{p.name}<button className="cb-chip-x" onClick={() => onRemove(p.id)}><X size={11} /></button></span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, costumesByPiece }) {
+  const [step, setStep] = useState(1);
+  const [castIds, setCastIds] = useState(new Set());
+  const [runtimeInput, setRuntimeInput] = useState("");
+  const [runtimeError, setRuntimeError] = useState(null);
+  const [noOpener, setNoOpener] = useState(false);
+  const [noCloser, setNoCloser] = useState(false);
+
+  if (people.length === 0) return <EmptyState text="Add people first (People tab) before building a show." />;
+  if (pieces.length === 0) return <EmptyState text="Add pieces first (Pieces tab) before building a show." />;
+
+  const addToCast = (id) => setCastIds(new Set([...castIds, id]));
+  const removeFromCast = (id) => { const next = new Set(castIds); next.delete(id); setCastIds(next); };
+
+  const targetSeconds = parseMMSS(runtimeInput);
+
+  const goToStep2 = () => setStep(2);
+  const goToStep3 = () => {
+    const secs = parseMMSS(runtimeInput);
+    if (secs == null) { setRuntimeError("Enter runtime as MM:SS, e.g. 20:00"); return; }
+    setRuntimeError(null);
+    setStep(3);
+  };
+  const startOver = () => {
+    setStep(1); setCastIds(new Set()); setRuntimeInput(""); setRuntimeError(null);
+    setNoOpener(false); setNoCloser(false);
+  };
+
+  const built = step === 3
+    ? buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, 10)
+    : null;
+
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Build a show</h2></div>
+      <div className="cb-wizard-steps">
+        <span className={"cb-wizard-step" + (step === 1 ? " cb-wizard-step-active" : "")}>1. Cast</span>
+        <span className={"cb-wizard-step" + (step === 2 ? " cb-wizard-step-active" : "")}>2. Runtime</span>
+        <span className={"cb-wizard-step" + (step === 3 ? " cb-wizard-step-active" : "")}>3. Running orders</span>
+      </div>
+
+      {step === 1 && (
+        <div className="cb-report">
+          <p className="cb-report-lede">Add everyone who's available for this show.</p>
+          <CastDropdownPicker people={people} castIds={castIds} onAdd={addToCast} onRemove={removeFromCast} />
+          <button className="cb-btn cb-btn-accent cb-build-btn" disabled={castIds.size === 0} onClick={goToStep2}>
+            Next
+          </button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="cb-report">
+          <p className="cb-report-lede">How much time do you have for sketches? Enter it as MM:SS.</p>
+          <div className="cb-runtime-target">
+            <label>Runtime</label>
+            <input
+              className="cb-input cb-input-num cb-input-mmss"
+              placeholder="20:00"
+              value={runtimeInput}
+              onChange={e => setRuntimeInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && goToStep3()}
+            />
+          </div>
+          {runtimeError && <div className="cb-conflict"><AlertCircle size={14} /> {runtimeError}</div>}
+          <div className="cb-wizard-nav">
+            <button className="cb-btn" onClick={() => setStep(1)}>Back</button>
+            <button className="cb-btn cb-btn-accent" onClick={goToStep3}>Next</button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && built && (
+        <div className="cb-report">
+          <p className="cb-report-lede">
+            {(people.filter(p => castIds.has(p.id)).length)} available, {fmtTime(targetSeconds)} to fill.
+          </p>
+          <div className="cb-wizard-checkboxes">
+            <label className="cb-runtime-row"><input type="checkbox" checked={noOpener} onChange={e => setNoOpener(e.target.checked)} /> No opener</label>
+            <label className="cb-runtime-row"><input type="checkbox" checked={noCloser} onChange={e => setNoCloser(e.target.checked)} /> No closer</label>
+          </div>
+
+          {built.blocked === "opener" && (
+            <EmptyState text="No opener is doable with this cast. Check 'No opener' to build a running order without one, cast more people, or add an Opener-type piece." />
+          )}
+          {built.blocked === "closer" && (
+            <EmptyState text="No closer is doable with this cast. Check 'No closer' to build a running order without one, cast more people, or add a Closer-type piece." />
+          )}
+          {!built.blocked && built.options.length === 0 && (
+            <EmptyState text="No running order fits — try more time, a different cast, or the No opener/No closer checkboxes." />
+          )}
+          {!built.blocked && built.options.length > 0 && (
+            <>
+              <div className="cb-coverage-head">Found {built.options.length} possible running order{built.options.length === 1 ? "" : "s"}, best time-use first</div>
+              <div className="cb-card-grid cb-show-grid">
+                {built.options.map((opt, i) => (
+                  <RunningOrderCard
+                    key={i} option={opt} index={i}
+                    tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+                    costumesByPiece={costumesByPiece} people={people} castIds={castIds}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+          {built.missing.length > 0 && (
+            <div className="cb-coverage-block">
+              <div className="cb-coverage-head"><span className="cb-dim">Left out — not covered by this cast ({built.missing.length})</span></div>
+              <div className="cb-chiplist">{built.missing.map(p => <span className="cb-chip cb-chip-static" key={p.id}>{p.name}</span>)}</div>
+            </div>
+          )}
+
+          <div className="cb-wizard-nav">
+            <button className="cb-btn" onClick={() => setStep(2)}>Back</button>
+            <button className="cb-btn" onClick={startOver}>Start over</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- styles ---------------- */
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+.cb-root {
+  --bg: #17151a;
+  --surface: #211e26;
+  --surface-2: #2a2631;
+  --border: #3a3540;
+  --text: #f2ece1;
+  --text-dim: #a89f9a;
+  --accent: #e8a23d;
+  --accent-2: #c1443c;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+  padding: 28px 24px 60px;
+  box-sizing: border-box;
+}
+.cb-root * { box-sizing: border-box; }
+.cb-loading { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.cb-loading-text { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+.cb-setup { max-width: 460px; text-align: center; }
+.cb-setup h2 { font-family: 'Oswald', sans-serif; text-transform: uppercase; }
+.cb-setup code { background: var(--surface); padding: 2px 6px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+
+.cb-login { display: flex; flex-direction: column; gap: 12px; width: 280px; text-align: left; }
+.cb-login-title { margin-bottom: 8px; }
+.cb-login-btn { justify-content: center; margin-top: 4px; }
+
+.cb-header { max-width: 980px; margin: 0 auto 24px; }
+.cb-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cb-signout { display: flex; align-items: center; gap: 6px; background: transparent; border: 1px solid var(--border); color: var(--text-dim); border-radius: 3px; padding: 7px 12px; font-family: 'Inter', sans-serif; font-size: 12.5px; cursor: pointer; margin-top: 2px; }
+.cb-signout:hover { color: var(--text); border-color: var(--text-dim); }
+.cb-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+.cb-title { font-family: 'Oswald', sans-serif; font-weight: 700; font-size: 30px; letter-spacing: 0.01em; margin: 0 0 18px; text-transform: uppercase; }
+.cb-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.cb-tab { display: flex; align-items: center; gap: 6px; background: transparent; border: none; cursor: pointer; color: var(--text-dim); font-family: 'Oswald', sans-serif; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; padding: 9px 14px; border-bottom: 2px solid transparent; position: relative; top: 1px; transition: color 0.15s ease, border-color 0.15s ease; }
+.cb-tab:hover { color: var(--text); }
+.cb-tab-active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.cb-error-banner { max-width: 980px; margin: 0 auto 16px; display: flex; align-items: center; gap: 8px; background: rgba(193,68,60,0.15); border: 1px solid rgba(193,68,60,0.4); color: #ecb3ae; font-size: 13px; padding: 10px 14px; border-radius: 4px; }
+
+.cb-main { max-width: 980px; margin: 0 auto; }
+.cb-section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.cb-section-head h2 { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 18px; margin: 0; font-weight: 600; }
+.cb-count { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-dim); }
+
+.cb-addrow { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.cb-addrow-piece .cb-input:first-child { flex: 1 1 220px; }
+.cb-colon { display: flex; align-items: center; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }
+
+.cb-input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 3px; padding: 9px 11px; font-family: 'Inter', sans-serif; font-size: 13.5px; flex: 1; min-width: 120px; outline: none; transition: border-color 0.15s ease; }
+.cb-input:focus { border-color: var(--accent); }
+.cb-input-num { flex: 0 0 66px; min-width: 0; }
+
+.cb-btn { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 3px; padding: 9px 14px; font-family: 'Oswald', sans-serif; font-size: 12.5px; letter-spacing: 0.03em; text-transform: uppercase; cursor: pointer; white-space: nowrap; transition: background 0.15s ease, border-color 0.15s ease; }
+.cb-btn-accent { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
+.cb-btn-accent:hover { filter: brightness(1.08); }
+.cb-btn:focus-visible, .cb-input:focus-visible, .cb-select:focus-visible, .cb-tab:focus-visible, .cb-icon-btn:focus-visible, .cb-subtab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.cb-empty { color: var(--text-dim); font-size: 13px; border: 1px dashed var(--border); border-radius: 4px; padding: 16px; margin-bottom: 16px; font-style: italic; }
+
+.cb-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.cb-card { background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 13px 14px; position: relative; }
+.cb-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cb-cue { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--accent); background: rgba(232,162,61,0.12); border: 1px solid rgba(232,162,61,0.35); padding: 2px 6px; border-radius: 2px; letter-spacing: 0.03em; }
+.cb-cue-inline { color: var(--accent); font-size: 11px; }
+.cb-card-name { font-family: 'Oswald', sans-serif; font-size: 15.5px; font-weight: 600; margin-bottom: 6px; }
+.cb-card-sub { font-size: 12.5px; color: var(--text); line-height: 1.6; }
+.cb-dim { color: var(--text-dim); }
+.cb-mono { font-family: 'JetBrains Mono', monospace; }
+.cb-accent-text { color: var(--accent); }
+.cb-taglist { list-style: none; margin: 0; padding: 0; }
+.cb-taglist li { padding: 1px 0; }
+
+.cb-icon-btn { background: transparent; border: none; color: var(--text-dim); cursor: pointer; padding: 4px; border-radius: 3px; display: flex; align-items: center; transition: color 0.15s ease, background 0.15s ease; }
+.cb-icon-btn:hover { color: var(--accent-2); background: rgba(193,68,60,0.12); }
+
+.cb-piece-groups { display: flex; flex-direction: column; gap: 22px; }
+.cb-piece-group { border-left: 2px solid var(--accent); padding-left: 16px; }
+.cb-piece-group-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.cb-piece-group-name { font-family: 'Oswald', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
+
+.cb-track-row { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
+.cb-track-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cb-track-name { font-weight: 600; font-size: 13.5px; flex: 1; }
+.cb-track-people { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+.cb-chip { display: inline-flex; align-items: center; gap: 5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 6px 4px 10px; font-size: 12.5px; }
+.cb-chip-static { padding-right: 10px; }
+.cb-chip-x { background: transparent; border: none; color: var(--text-dim); cursor: pointer; display: flex; padding: 2px; border-radius: 50%; }
+.cb-chip-x:hover { color: var(--accent-2); }
+.cb-chiplist { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+
+.cb-select { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); border-radius: 20px; padding: 5px 10px; font-size: 12.5px; font-family: 'Inter', sans-serif; cursor: pointer; }
+.cb-select-inline { max-width: 180px; }
+
+.cb-conflict { display: flex; align-items: center; gap: 6px; background: rgba(193,68,60,0.15); border: 1px solid rgba(193,68,60,0.4); color: #ecb3ae; font-size: 12.5px; padding: 8px 12px; border-radius: 4px; margin-bottom: 14px; }
+
+.cb-subtabs { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+.cb-subtab { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); border-radius: 20px; padding: 7px 14px; font-size: 12.5px; cursor: pointer; font-family: 'Inter', sans-serif; }
+.cb-subtab-active { color: #1a1408; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+.cb-report-lede { color: var(--text-dim); font-size: 13px; margin: 0 0 16px; }
+.cb-runtime-target { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.cb-runtime-target label { font-size: 12.5px; color: var(--text-dim); }
+.cb-runtime-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+.cb-runtime-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.cb-runtime-row input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+.cb-runtime-name { flex: 1; font-size: 13.5px; }
+.cb-runtime-total { display: flex; align-items: center; gap: 10px; font-size: 13.5px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; }
+.cb-runtime-over { border-color: var(--accent-2); }
+
+.cb-report-label { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; color: var(--text-dim); }
+.cb-linklike { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; display: inline-flex; align-items: center; gap: 4px; font-family: 'Inter', sans-serif; }
+.cb-linklike:hover { text-decoration: underline; }
+
+.cb-picker { margin-bottom: 18px; }
+.cb-picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cb-picker-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.cb-picker-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px 6px 10px; font-size: 12.5px; cursor: pointer; }
+.cb-picker-chip input { accent-color: var(--accent); }
+
+.cb-coverage-block { margin: 18px 0; }
+.cb-coverage-head { display: flex; align-items: center; gap: 7px; font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 13px; margin-bottom: 10px; }
+.cb-coverage-good { color: var(--accent); }
+.cb-coverage-bad { color: #ecb3ae; }
+
+.cb-build-btn { margin-bottom: 6px; }
+.cb-builder-results { margin-top: 20px; }
+.cb-show-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.cb-show-option { display: flex; flex-direction: column; }
+.cb-show-piece-list { margin: 4px 0 10px; }
+.cb-show-piece-list li { display: flex; justify-content: space-between; gap: 8px; }
+.cb-show-costume-toggle { margin-top: auto; }
+.cb-show-costumes { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.cb-show-costume-group { line-height: 1.5; }
+.cb-export-btn { display: flex; align-items: center; gap: 6px; margin-top: 10px; justify-content: center; }
+
+.cb-type-select { margin-top: 10px; width: 100%; }
+.cb-select-full { width: 100%; }
+.cb-type-badge { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; margin-left: 6px; }
+
+.cb-wizard-steps { display: flex; gap: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.cb-wizard-step { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; color: var(--text-dim); }
+.cb-wizard-step-active { color: var(--accent); }
+.cb-wizard-nav { display: flex; gap: 8px; margin-top: 18px; }
+.cb-wizard-checkboxes { display: flex; gap: 18px; margin-bottom: 16px; }
+.cb-input-mmss { flex: 0 0 100px; font-family: 'JetBrains Mono', monospace; text-align: center; }
+
+@media (max-width: 560px) {
+  .cb-title { font-size: 24px; }
+  .cb-card-grid { grid-template-columns: 1fr; }
+}
+`;
