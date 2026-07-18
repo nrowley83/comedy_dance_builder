@@ -1,7 +1,7 @@
 import { supabase } from "./supabase";
 
 const mapPerson = (r) => ({ id: r.id, name: r.name });
-const mapPiece = (r) => ({ id: r.id, name: r.name, length: r.length_seconds, type: r.type || "normal" });
+const mapPiece = (r) => ({ id: r.id, name: r.name, length: r.length_seconds, type: r.type || "normal", archived: r.archived === true });
 const mapTrack = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id, required: r.required !== false });
 const mapCostume = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id });
 const mapAssignment = (r) => ({ id: r.id, personId: r.person_id, trackId: r.track_id });
@@ -49,6 +49,9 @@ export async function updatePiece(id, name, length) {
 }
 export async function updatePieceType(id, type) {
   return mapPiece(check(await supabase.from("pieces").update({ type }).eq("id", id).select().single()));
+}
+export async function updatePieceArchived(id, archived) {
+  return mapPiece(check(await supabase.from("pieces").update({ archived }).eq("id", id).select().single()));
 }
 export async function deletePiece(id) {
   check(await supabase.from("pieces").delete().eq("id", id));

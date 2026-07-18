@@ -14,12 +14,14 @@ create table if not exists pieces (
   name text not null,
   length_seconds integer not null default 0,
   type text not null default 'normal',
+  archived boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 -- Migration safety net: adds the column/constraint if this script is being
--- re-run against a project created before "type" existed. No-op otherwise.
+-- re-run against a project created before "type"/"archived" existed. No-op otherwise.
 alter table pieces add column if not exists type text not null default 'normal';
+alter table pieces add column if not exists archived boolean not null default false;
 
 do $$
 begin

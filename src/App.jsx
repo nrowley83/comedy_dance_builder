@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download, Pencil, Check, Bookmark, Save } from "lucide-react";
+import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download, Pencil, Check, Bookmark, Save, Archive, ArchiveRestore } from "lucide-react";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 import * as db from "./lib/db";
 
@@ -160,6 +160,7 @@ export default function CallBoard() {
     deletePiece: run(db.deletePiece),
     updatePiece: run(db.updatePiece),
     updatePieceType: run(db.updatePieceType),
+    updatePieceArchived: run(db.updatePieceArchived),
     addTrack: run(db.addTrack),
     deleteTrack: run(db.deleteTrack),
     updateTrackRequired: run(db.updateTrackRequired),
@@ -259,6 +260,7 @@ export default function CallBoard() {
           <PiecesTab
             pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece}
             onEdit={actions.updatePiece} onTypeChange={actions.updatePieceType}
+            onArchiveChange={actions.updatePieceArchived}
             tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
           />
         )}
@@ -420,7 +422,7 @@ const PIECE_TYPES = [
   { value: "closer", label: "Closer" },
 ];
 
-function PieceCard({ p, index, onDelete, onEdit, onTypeChange, tracksByPiece, costumesByPiece }) {
+function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, costumesByPiece }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(p.name);
   const [min, setMin] = useState(String(Math.floor((p.length || 0) / 60)));
@@ -464,11 +466,14 @@ function PieceCard({ p, index, onDelete, onEdit, onTypeChange, tracksByPiece, co
   }
 
   return (
-    <div className="cb-card">
+    <div className={"cb-card" + (p.archived ? " cb-card-archived" : "")}>
       <div className="cb-card-top">
         <CueTag n={index + 1} prefix="PC" />
         <div className="cb-card-edit-actions">
           <button className="cb-icon-btn" onClick={startEdit} title="Edit piece"><Pencil size={13} /></button>
+          <button className="cb-icon-btn" onClick={() => onArchiveChange(p.id, !p.archived)} title={p.archived ? "Unarchive piece" : "Archive piece"}>
+            {p.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+          </button>
           <button className="cb-icon-btn" onClick={() => onDelete(p.id)} title="Remove piece"><Trash2 size={14} /></button>
         </div>
       </div>
@@ -485,11 +490,12 @@ function PieceCard({ p, index, onDelete, onEdit, onTypeChange, tracksByPiece, co
   );
 }
 
-function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, tracksByPiece, costumesByPiece }) {
+function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, costumesByPiece }) {
   const [name, setName] = useState("");
   const [min, setMin] = useState("");
   const [sec, setSec] = useState("");
   const [type, setType] = useState("normal");
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   const add = () => {
     const n = name.trim();
@@ -498,6 +504,9 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, tracksByPiec
     onAdd(n, total, type);
     setName(""); setMin(""); setSec(""); setType("normal");
   };
+
+  const activePieces = pieces.filter(p => !p.archived);
+  const archivedPieces = pieces.filter(p => p.archived);
 
   return (
     <section>
@@ -516,25 +525,112 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, tracksByPiec
         <button className="cb-btn cb-btn-accent" onClick={add}><Plus size={15} /> Add piece</button>
       </div>
       {pieces.length === 0 && <EmptyState text="No pieces yet. Add one above with its run time." />}
+      {activePieces.length === 0 && pieces.length > 0 && <EmptyState text="Every piece is archived — unarchive one below, or add a new one above." />}
       <div className="cb-card-grid">
-        {pieces.map((p, i) => (
+        {activePieces.map((p, i) => (
           <PieceCard
             key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
-            tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+            onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
           />
         ))}
       </div>
+
+      {archivedPieces.length > 0 && (
+        <div className="cb-archive-section">
+          <button className="cb-linklike cb-archive-toggle" onClick={() => setArchiveOpen(o => !o)}>
+            {archiveOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            Archive ({archivedPieces.length})
+          </button>
+          {archiveOpen && (
+            <div className="cb-card-grid cb-archive-grid">
+              {archivedPieces.map((p, i) => (
+                <PieceCard
+                  key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
+                  onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
 /* ---------------- Tracks (+ assignments) ---------------- */
 
+function PieceTracksGroup({ piece, theseTracks, expanded, onToggleExpand, newTrackName, setNewTrackName, newTrackOptional, setNewTrackOptional, addTrack, onDeleteTrack, onRemoveAssignment, onToggleRequired, people, pickPerson, setPickPerson, assignPerson, assignmentsByTrack }) {
+  return (
+    <div className={"cb-piece-group" + (piece.archived ? " cb-card-archived" : "")}>
+      <button className="cb-piece-group-head cb-piece-group-toggle" onClick={onToggleExpand}>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="cb-piece-group-name">{piece.name}</span>
+        <span className="cb-dim">{theseTracks.length} track{theseTracks.length === 1 ? "" : "s"}</span>
+        <span className="cb-mono cb-dim">{fmtTime(piece.length)}</span>
+      </button>
+      {expanded && (
+        <div className="cb-piece-group-body">
+          <div className="cb-addrow">
+            <input className="cb-input" placeholder="Track name (e.g. Lead, Ensemble A)"
+              value={newTrackName[piece.id] || ""}
+              onChange={e => setNewTrackName({ ...newTrackName, [piece.id]: e.target.value })}
+              onKeyDown={e => { if (e.key === "Enter") addTrack(piece.id); }} />
+            <label className="cb-inline-checkbox">
+              <input type="checkbox" checked={!!newTrackOptional[piece.id]}
+                onChange={e => setNewTrackOptional({ ...newTrackOptional, [piece.id]: e.target.checked })} />
+              Optional
+            </label>
+            <button className="cb-btn cb-btn-accent" onClick={() => addTrack(piece.id)}><Plus size={15} /> Add track</button>
+          </div>
+          {theseTracks.length === 0 && <EmptyState text="No tracks in this piece yet." />}
+          {theseTracks.map((t, i) => {
+            const asg = assignmentsByTrack[t.id] || [];
+            return (
+              <div className="cb-track-row" key={t.id}>
+                <div className="cb-track-row-top">
+                  <span className="cb-mono cb-cue-inline">T-{String(i + 1).padStart(2, "0")}</span>
+                  <span className="cb-track-name">{t.name}{t.required === false && <span className="cb-type-badge"> Optional</span>}</span>
+                  <button className="cb-icon-btn" onClick={() => onDeleteTrack(t.id)} title="Remove track"><Trash2 size={14} /></button>
+                </div>
+                <div className="cb-track-people">
+                  {asg.map(a => {
+                    const person = people.find(pp => pp.id === a.personId);
+                    return (
+                      <span className="cb-chip" key={a.id}>
+                        {person ? person.name : "—"}
+                        <button className="cb-chip-x" onClick={() => onRemoveAssignment(a.id)}><X size={11} /></button>
+                      </span>
+                    );
+                  })}
+                  <select className="cb-select cb-select-inline" value={pickPerson[t.id] || ""}
+                    onChange={e => { assignPerson(t.id, piece.id, e.target.value); setPickPerson({ ...pickPerson, [t.id]: "" }); }}>
+                    <option value="">+ assign person…</option>
+                    {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <ToggleSwitch label="Optional" checked={t.required === false} onChange={checked => onToggleRequired(t.id, !checked)} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired, people, onAssignPerson, onRemoveAssignment, assignmentsByTrack, personHasPieceConflict }) {
   const [newTrackName, setNewTrackName] = useState({});
   const [newTrackOptional, setNewTrackOptional] = useState({});
   const [pickPerson, setPickPerson] = useState({});
   const [conflictMsg, setConflictMsg] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  const [archiveOpen, setArchiveOpen] = useState(false);
+
+  const toggleExpand = (pieceId) => {
+    const next = new Set(expandedIds);
+    if (next.has(pieceId)) next.delete(pieceId); else next.add(pieceId);
+    setExpandedIds(next);
+  };
 
   const addTrack = (pieceId) => {
     const nm = (newTrackName[pieceId] || "").trim();
@@ -559,65 +655,48 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired
     return <section><div className="cb-section-head"><h2>Tracks</h2></div><EmptyState text="Add a piece first — tracks belong to a piece." /></section>;
   }
 
+  const activePieces = pieces.filter(p => !p.archived);
+  const archivedPieces = pieces.filter(p => p.archived);
+
+  const groupProps = {
+    newTrackName, setNewTrackName, newTrackOptional, setNewTrackOptional,
+    addTrack, onDeleteTrack, onRemoveAssignment, onToggleRequired, people, pickPerson, setPickPerson,
+    assignPerson, assignmentsByTrack,
+  };
+
   return (
     <section>
       <div className="cb-section-head"><h2>Tracks</h2><span className="cb-count">{tracks.length}</span></div>
       {conflictMsg && <div className="cb-conflict"><AlertCircle size={14} /> {conflictMsg}</div>}
       <div className="cb-piece-groups">
-        {pieces.map(piece => {
-          const theseTracks = tracks.filter(t => t.pieceId === piece.id);
-          return (
-            <div className="cb-piece-group" key={piece.id}>
-              <div className="cb-piece-group-head">
-                <span className="cb-piece-group-name">{piece.name}</span>
-                <span className="cb-mono cb-dim">{fmtTime(piece.length)}</span>
-              </div>
-              <div className="cb-addrow">
-                <input className="cb-input" placeholder="Track name (e.g. Lead, Ensemble A)"
-                  value={newTrackName[piece.id] || ""}
-                  onChange={e => setNewTrackName({ ...newTrackName, [piece.id]: e.target.value })}
-                  onKeyDown={e => { if (e.key === "Enter") addTrack(piece.id); }} />
-                <label className="cb-inline-checkbox">
-                  <input type="checkbox" checked={!!newTrackOptional[piece.id]}
-                    onChange={e => setNewTrackOptional({ ...newTrackOptional, [piece.id]: e.target.checked })} />
-                  Optional
-                </label>
-                <button className="cb-btn cb-btn-accent" onClick={() => addTrack(piece.id)}><Plus size={15} /> Add track</button>
-              </div>
-              {theseTracks.length === 0 && <EmptyState text="No tracks in this piece yet." />}
-              {theseTracks.map((t, i) => {
-                const asg = assignmentsByTrack[t.id] || [];
-                return (
-                  <div className="cb-track-row" key={t.id}>
-                    <div className="cb-track-row-top">
-                      <span className="cb-mono cb-cue-inline">T-{String(i + 1).padStart(2, "0")}</span>
-                      <span className="cb-track-name">{t.name}{t.required === false && <span className="cb-type-badge"> Optional</span>}</span>
-                      <button className="cb-icon-btn" onClick={() => onDeleteTrack(t.id)} title="Remove track"><Trash2 size={14} /></button>
-                    </div>
-                    <div className="cb-track-people">
-                      {asg.map(a => {
-                        const person = people.find(pp => pp.id === a.personId);
-                        return (
-                          <span className="cb-chip" key={a.id}>
-                            {person ? person.name : "—"}
-                            <button className="cb-chip-x" onClick={() => onRemoveAssignment(a.id)}><X size={11} /></button>
-                          </span>
-                        );
-                      })}
-                      <select className="cb-select cb-select-inline" value={pickPerson[t.id] || ""}
-                        onChange={e => { assignPerson(t.id, piece.id, e.target.value); setPickPerson({ ...pickPerson, [t.id]: "" }); }}>
-                        <option value="">+ assign person…</option>
-                        {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
-                      <ToggleSwitch label="Optional" checked={t.required === false} onChange={checked => onToggleRequired(t.id, !checked)} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+        {activePieces.map(piece => (
+          <PieceTracksGroup
+            key={piece.id} piece={piece} theseTracks={tracks.filter(t => t.pieceId === piece.id)}
+            expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
+            {...groupProps}
+          />
+        ))}
       </div>
+
+      {archivedPieces.length > 0 && (
+        <div className="cb-archive-section">
+          <button className="cb-linklike cb-archive-toggle" onClick={() => setArchiveOpen(o => !o)}>
+            {archiveOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            Archived ({archivedPieces.length})
+          </button>
+          {archiveOpen && (
+            <div className="cb-piece-groups cb-archive-grid">
+              {archivedPieces.map(piece => (
+                <PieceTracksGroup
+                  key={piece.id} piece={piece} theseTracks={tracks.filter(t => t.pieceId === piece.id)}
+                  expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
+                  {...groupProps}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -1143,6 +1222,8 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
   if (people.length === 0) return <EmptyState text="Add people first (People tab) before building a show." />;
   if (pieces.length === 0) return <EmptyState text="Add pieces first (Pieces tab) before building a show." />;
 
+  const activePieces = pieces.filter(p => !p.archived);
+
   const addToCast = (id) => setCastIds(new Set([...castIds, id]));
   const removeFromCast = (id) => { const next = new Set(castIds); next.delete(id); setCastIds(next); };
   const loadPreset = (preset) => {
@@ -1165,7 +1246,7 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
   };
 
   const built = step === 3
-    ? buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, !openerOn, !closerOn, optionalOn, 10)
+    ? buildRunningOrders(activePieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, !openerOn, !closerOn, optionalOn, 10)
     : null;
 
   return (
@@ -1389,7 +1470,7 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
 
       <div className="cb-report">
         <p className="cb-report-lede">Build a new show by adding pieces in performance order.</p>
-        <PieceDropdownPicker pieces={pieces} orderedIds={orderedIds} onAdd={addPieceToOrder} onRemove={removePieceFromOrder} pieceById={pieceById} />
+        <PieceDropdownPicker pieces={pieces.filter(p => !p.archived)} orderedIds={orderedIds} onAdd={addPieceToOrder} onRemove={removePieceFromOrder} pieceById={pieceById} />
         <div className="cb-save-show-row">
           <input className="cb-input" placeholder="Show name" value={showName}
             onChange={e => setShowName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveShow()} />
@@ -1501,6 +1582,9 @@ const CSS = `
 .cb-piece-groups { display: flex; flex-direction: column; gap: 22px; }
 .cb-piece-group { border-left: 2px solid var(--accent); padding-left: 16px; }
 .cb-piece-group-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.cb-piece-group-toggle { background: none; border: none; cursor: pointer; width: 100%; text-align: left; padding: 0; margin-bottom: 0; color: inherit; font-family: inherit; }
+.cb-piece-group-toggle .cb-piece-group-name { flex: 1; }
+.cb-piece-group-body { margin-top: 12px; }
 .cb-piece-group-name { font-family: 'Oswald', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
 
 .cb-track-row { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
@@ -1600,6 +1684,12 @@ const CSS = `
 .cb-saved-show-list { margin-top: 10px; }
 .cb-piece-not-covered { color: #ecb3ae; }
 .cb-not-covered-detail { color: #ecb3ae; font-size: 11.5px; }
+
+.cb-card-archived { opacity: 0.55; }
+.cb-card-archived:hover { opacity: 0.85; }
+.cb-archive-section { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
+.cb-archive-toggle { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; }
+.cb-archive-grid { margin-top: 14px; }
 
 @media (max-width: 560px) {
   .cb-title { font-size: 24px; }
