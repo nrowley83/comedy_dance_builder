@@ -41,7 +41,19 @@ create table if not exists tracks (
 -- Migration safety net for projects created before "required" existed.
 alter table tracks add column if not exists required boolean not null default true;
 
-create table if not exists costumes (
+-- "costumes" was renamed to "props". This block migrates an existing
+-- project's table (and its data) in place; on a brand new project neither
+-- table exists yet, so this is a safe no-op and "props" gets created fresh
+-- below.
+do $$
+begin
+  if exists (select 1 from information_schema.tables where table_name = 'costumes')
+     and not exists (select 1 from information_schema.tables where table_name = 'props') then
+    alter table costumes rename to props;
+  end if;
+end $$;
+
+create table if not exists props (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   piece_id uuid not null references pieces(id) on delete cascade,
@@ -77,7 +89,7 @@ create table if not exists saved_shows (
 alter table people enable row level security;
 alter table pieces enable row level security;
 alter table tracks enable row level security;
-alter table costumes enable row level security;
+alter table props enable row level security;
 alter table assignments enable row level security;
 alter table cast_presets enable row level security;
 alter table saved_shows enable row level security;
@@ -85,13 +97,13 @@ alter table saved_shows enable row level security;
 drop policy if exists "public access" on people;
 drop policy if exists "public access" on pieces;
 drop policy if exists "public access" on tracks;
-drop policy if exists "public access" on costumes;
+drop policy if exists "public access" on props;
 drop policy if exists "public access" on assignments;
 
 drop policy if exists "authenticated access" on people;
 drop policy if exists "authenticated access" on pieces;
 drop policy if exists "authenticated access" on tracks;
-drop policy if exists "authenticated access" on costumes;
+drop policy if exists "authenticated access" on props;
 drop policy if exists "authenticated access" on assignments;
 drop policy if exists "authenticated access" on cast_presets;
 drop policy if exists "authenticated access" on saved_shows;
@@ -99,7 +111,7 @@ drop policy if exists "authenticated access" on saved_shows;
 create policy "authenticated access" on people for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on pieces for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on tracks for all using (auth.uid() is not null) with check (auth.uid() is not null);
-create policy "authenticated access" on costumes for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authenticated access" on props for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on assignments for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on cast_presets for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on saved_shows for all using (auth.uid() is not null) with check (auth.uid() is not null);

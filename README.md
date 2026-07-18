@@ -1,7 +1,7 @@
 # The Call Board
 
 A recital/show planning tool: track your people, pieces, tracks, and
-costumes, then use Reports to build a show from whatever cast and time
+props, then use Reports to build a show from whatever cast and time
 you've got. Data lives in a Supabase (Postgres) database — 5 real SQL
 tables under the hood — behind a login screen only you can get past.
 
@@ -13,11 +13,13 @@ tables under the hood — behind a login screen only you can get past.
 2. Once it's provisioned, open **SQL Editor** in the left sidebar, click
    **New query**, paste in the contents of `supabase/schema.sql` from
    this repo, and run it. That creates the `people`, `pieces`, `tracks`,
-   `costumes`, and `assignments` tables, and locks every one of them down
-   to signed-in users only. (If you'd already run an earlier version of
-   this script, running the current version again is safe — it adds the
-   new `type` column on `pieces` and updates the security policies
-   without touching your existing data.)
+   `props`, `assignments`, `cast_presets`, and `saved_shows` tables,
+   and locks every one of them down to signed-in users only. (If you'd
+   already run an earlier version of this script, running the current
+   version again is safe — it adds new columns/tables, including
+   `required` on `tracks` and `archived` on `pieces`, renames the old
+   `costumes` table to `props` in place (your data comes with it), and updates the
+   security policies without touching your existing data.)
 3. Open **Settings → API**. You'll need two values from this page:
    - **Project URL**
    - **anon public** key (not the `service_role` key — that one should

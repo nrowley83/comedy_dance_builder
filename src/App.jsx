@@ -85,7 +85,7 @@ export default function CallBoard() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("builder");
-  const [data, setData] = useState({ people: [], pieces: [], tracks: [], costumes: [], assignments: [], castPresets: [], savedShows: [] });
+  const [data, setData] = useState({ people: [], pieces: [], tracks: [], props: [], assignments: [], castPresets: [], savedShows: [] });
 
   const refresh = async () => {
     try {
@@ -108,7 +108,7 @@ export default function CallBoard() {
     if (session) refresh().then(() => setReady(true));
   }, [session]);
 
-  const { people, pieces, tracks, costumes, assignments, castPresets, savedShows } = data;
+  const { people, pieces, tracks, props, assignments, castPresets, savedShows } = data;
 
   const pieceById = useMemo(() => Object.fromEntries(pieces.map(p => [p.id, p])), [pieces]);
   const tracksByPiece = useMemo(() => {
@@ -116,11 +116,11 @@ export default function CallBoard() {
     tracks.forEach(t => { (m[t.pieceId] = m[t.pieceId] || []).push(t); });
     return m;
   }, [tracks]);
-  const costumesByPiece = useMemo(() => {
+  const propsByPiece = useMemo(() => {
     const m = {};
-    costumes.forEach(c => { (m[c.pieceId] = m[c.pieceId] || []).push(c); });
+    props.forEach(c => { (m[c.pieceId] = m[c.pieceId] || []).push(c); });
     return m;
-  }, [costumes]);
+  }, [props]);
   const assignmentsByTrack = useMemo(() => {
     const m = {};
     assignments.forEach(a => { (m[a.trackId] = m[a.trackId] || []).push(a); });
@@ -164,8 +164,8 @@ export default function CallBoard() {
     addTrack: run(db.addTrack),
     deleteTrack: run(db.deleteTrack),
     updateTrackRequired: run(db.updateTrackRequired),
-    addCostume: run(db.addCostume),
-    deleteCostume: run(db.deleteCostume),
+    addProp: run(db.addProp),
+    deleteProp: run(db.deleteProp),
     addAssignment: run(db.addAssignment),
     deleteAssignment: run(db.deleteAssignment),
     addCastPreset: run(db.addCastPreset),
@@ -245,7 +245,7 @@ export default function CallBoard() {
         {tab === "builder" && (
           <BuildShowWizard
             people={people} pieces={pieces} tracksByPiece={tracksByPiece}
-            assignmentsByTrack={assignmentsByTrack} costumesByPiece={costumesByPiece}
+            assignmentsByTrack={assignmentsByTrack} propsByPiece={propsByPiece}
             castPresets={castPresets} onSavePreset={actions.addCastPreset} onDeletePreset={actions.deleteCastPreset}
             onSaveShow={actions.addSavedShow}
           />
@@ -261,7 +261,7 @@ export default function CallBoard() {
             pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece}
             onEdit={actions.updatePiece} onTypeChange={actions.updatePieceType}
             onArchiveChange={actions.updatePieceArchived}
-            tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+            tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
           />
         )}
         {tab === "tracks" && (
@@ -272,10 +272,10 @@ export default function CallBoard() {
             assignmentsByTrack={assignmentsByTrack} personHasPieceConflict={personHasPieceConflict}
           />
         )}
-        {tab === "costumes" && (
-          <CostumesTab
-            pieces={pieces} costumes={costumes} onAdd={actions.addCostume} onDelete={actions.deleteCostume}
-            costumesByPiece={costumesByPiece}
+        {tab === "props" && (
+          <PropsTab
+            pieces={pieces} props={props} onAdd={actions.addProp} onDelete={actions.deleteProp}
+            propsByPiece={propsByPiece}
           />
         )}
         {tab === "savedshows" && (
@@ -287,7 +287,7 @@ export default function CallBoard() {
         {tab === "reports" && (
           <ReportsTab
             people={people} pieces={pieces} assignmentsByPerson={assignmentsByPerson} trackById={trackById}
-            pieceById={pieceById} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+            pieceById={pieceById} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
             assignmentsByTrack={assignmentsByTrack}
           />
         )}
@@ -335,7 +335,7 @@ const TABS = [
   { key: "people", label: "People", icon: Users },
   { key: "pieces", label: "Pieces", icon: Music },
   { key: "tracks", label: "Tracks", icon: Route },
-  { key: "costumes", label: "Costumes", icon: Shirt },
+  { key: "props", label: "Props", icon: Shirt },
   { key: "savedshows", label: "Saved Shows", icon: Bookmark },
   { key: "reports", label: "Reports", icon: ClipboardList },
 ];
@@ -422,7 +422,7 @@ const PIECE_TYPES = [
   { value: "closer", label: "Closer" },
 ];
 
-function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, costumesByPiece }) {
+function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, propsByPiece }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(p.name);
   const [min, setMin] = useState(String(Math.floor((p.length || 0) / 60)));
@@ -481,7 +481,7 @@ function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, 
       <div className="cb-card-sub">
         <span className="cb-mono cb-accent-text">{fmtTime(p.length)}</span>
         <span className="cb-dim"> · {(tracksByPiece[p.id] || []).length} track{(tracksByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
-        <span className="cb-dim"> · {(costumesByPiece[p.id] || []).length} costume{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+        <span className="cb-dim"> · {(propsByPiece[p.id] || []).length} prop{(propsByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
       </div>
       <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
         {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -490,7 +490,7 @@ function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, 
   );
 }
 
-function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, costumesByPiece }) {
+function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, propsByPiece }) {
   const [name, setName] = useState("");
   const [min, setMin] = useState("");
   const [sec, setSec] = useState("");
@@ -530,7 +530,7 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
         {activePieces.map((p, i) => (
           <PieceCard
             key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
-            onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+            onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
           />
         ))}
       </div>
@@ -546,7 +546,7 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
               {archivedPieces.map((p, i) => (
                 <PieceCard
                   key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
-                  onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+                  onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
                 />
               ))}
             </div>
@@ -701,69 +701,120 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired
   );
 }
 
-/* ---------------- Costumes ---------------- */
+/* ---------------- Props ---------------- */
 
-function CostumesTab({ pieces, costumes, onAdd, onDelete, costumesByPiece }) {
+function PiecePropsGroup({ piece, theseProps, expanded, onToggleExpand, newName, setNewName, addProp, onDelete }) {
+  return (
+    <div className={"cb-piece-group" + (piece.archived ? " cb-card-archived" : "")}>
+      <button className="cb-piece-group-head cb-piece-group-toggle" onClick={onToggleExpand}>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="cb-piece-group-name">{piece.name}</span>
+        <span className="cb-dim">{theseProps.length} prop{theseProps.length === 1 ? "" : "s"}</span>
+      </button>
+      {expanded && (
+        <div className="cb-piece-group-body">
+          <div className="cb-addrow">
+            <input className="cb-input" placeholder="Prop (e.g. Red skirt, Top hat)"
+              value={newName[piece.id] || ""}
+              onChange={e => setNewName({ ...newName, [piece.id]: e.target.value })}
+              onKeyDown={e => { if (e.key === "Enter") addProp(piece.id); }} />
+            <button className="cb-btn cb-btn-accent" onClick={() => addProp(piece.id)}><Plus size={15} /> Add prop</button>
+          </div>
+          {theseProps.length === 0 ? (
+            <EmptyState text="No props logged for this number yet." />
+          ) : (
+            <div className="cb-chiplist">
+              {theseProps.map(c => (
+                <span className="cb-chip" key={c.id}>{c.name}<button className="cb-chip-x" onClick={() => onDelete(c.id)}><X size={11} /></button></span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PropsTab({ pieces, props, onAdd, onDelete, propsByPiece }) {
   const [newName, setNewName] = useState({});
-  const addCostume = (pieceId) => {
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  const [archiveOpen, setArchiveOpen] = useState(false);
+
+  const toggleExpand = (pieceId) => {
+    const next = new Set(expandedIds);
+    if (next.has(pieceId)) next.delete(pieceId); else next.add(pieceId);
+    setExpandedIds(next);
+  };
+
+  const addProp = (pieceId) => {
     const nm = (newName[pieceId] || "").trim();
     if (!nm) return;
     onAdd(nm, pieceId);
     setNewName({ ...newName, [pieceId]: "" });
   };
+
   if (pieces.length === 0) {
-    return <section><div className="cb-section-head"><h2>Costumes</h2></div><EmptyState text="Add a piece first — costumes belong to a piece." /></section>;
+    return <section><div className="cb-section-head"><h2>Props</h2></div><EmptyState text="Add a piece first — props belong to a piece." /></section>;
   }
+
+  const activePieces = pieces.filter(p => !p.archived);
+  const archivedPieces = pieces.filter(p => p.archived);
+
+  const groupProps = { newName, setNewName, addProp, onDelete };
+
   return (
     <section>
-      <div className="cb-section-head"><h2>Costumes</h2><span className="cb-count">{costumes.length}</span></div>
+      <div className="cb-section-head"><h2>Props</h2><span className="cb-count">{props.length}</span></div>
       <div className="cb-piece-groups">
-        {pieces.map(piece => {
-          const these = costumesByPiece[piece.id] || [];
-          return (
-            <div className="cb-piece-group" key={piece.id}>
-              <div className="cb-piece-group-head"><span className="cb-piece-group-name">{piece.name}</span></div>
-              <div className="cb-addrow">
-                <input className="cb-input" placeholder="Costume piece (e.g. Red skirt, Top hat)"
-                  value={newName[piece.id] || ""}
-                  onChange={e => setNewName({ ...newName, [piece.id]: e.target.value })}
-                  onKeyDown={e => { if (e.key === "Enter") addCostume(piece.id); }} />
-                <button className="cb-btn cb-btn-accent" onClick={() => addCostume(piece.id)}><Plus size={15} /> Add costume</button>
-              </div>
-              {these.length === 0 ? (
-                <EmptyState text="No costume pieces logged for this number yet." />
-              ) : (
-                <div className="cb-chiplist">
-                  {these.map(c => (
-                    <span className="cb-chip" key={c.id}>{c.name}<button className="cb-chip-x" onClick={() => onDelete(c.id)}><X size={11} /></button></span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {activePieces.map(piece => (
+          <PiecePropsGroup
+            key={piece.id} piece={piece} theseProps={propsByPiece[piece.id] || []}
+            expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
+            {...groupProps}
+          />
+        ))}
       </div>
+
+      {archivedPieces.length > 0 && (
+        <div className="cb-archive-section">
+          <button className="cb-linklike cb-archive-toggle" onClick={() => setArchiveOpen(o => !o)}>
+            {archiveOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            Archived ({archivedPieces.length})
+          </button>
+          {archiveOpen && (
+            <div className="cb-piece-groups cb-archive-grid">
+              {archivedPieces.map(piece => (
+                <PiecePropsGroup
+                  key={piece.id} piece={piece} theseProps={propsByPiece[piece.id] || []}
+                  expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
+                  {...groupProps}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
 /* ---------------- Reports ---------------- */
 
-function ReportsTab({ people, pieces, assignmentsByPerson, trackById, pieceById, costumesByPiece, tracksByPiece, assignmentsByTrack }) {
+function ReportsTab({ people, pieces, assignmentsByPerson, trackById, pieceById, propsByPiece, tracksByPiece, assignmentsByTrack }) {
   const [reportTab, setReportTab] = useState("coverage");
   return (
     <section>
       <div className="cb-section-head"><h2>Reports</h2></div>
       <div className="cb-subtabs">
         <button className={"cb-subtab" + (reportTab === "coverage" ? " cb-subtab-active" : "")} onClick={() => setReportTab("coverage")}>Cast coverage</button>
-        <button className={"cb-subtab" + (reportTab === "costume" ? " cb-subtab-active" : "")} onClick={() => setReportTab("costume")}>Costume list</button>
+        <button className={"cb-subtab" + (reportTab === "prop" ? " cb-subtab-active" : "")} onClick={() => setReportTab("prop")}>Prop list</button>
         <button className={"cb-subtab" + (reportTab === "runtime" ? " cb-subtab-active" : "")} onClick={() => setReportTab("runtime")}>Run time</button>
         <button className={"cb-subtab" + (reportTab === "cast" ? " cb-subtab-active" : "")} onClick={() => setReportTab("cast")}>Who's in what</button>
       </div>
       {reportTab === "coverage" && <CastCoverageReport people={people} pieces={pieces} tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack} />}
       {reportTab === "cast" && <CastReport people={people} assignmentsByPerson={assignmentsByPerson} trackById={trackById} pieceById={pieceById} />}
       {reportTab === "runtime" && <RuntimeReport pieces={pieces} />}
-      {reportTab === "costume" && <CostumeReport pieces={pieces} costumesByPiece={costumesByPiece} />}
+      {reportTab === "prop" && <PropReport pieces={pieces} propsByPiece={propsByPiece} />}
     </section>
   );
 }
@@ -835,31 +886,31 @@ function RuntimeReport({ pieces }) {
   );
 }
 
-function CostumeReport({ pieces, costumesByPiece }) {
+function PropReport({ pieces, propsByPiece }) {
   const [selected, setSelected] = useState({});
-  if (pieces.length === 0) return <EmptyState text="Add pieces and costume pieces first." />;
+  if (pieces.length === 0) return <EmptyState text="Add pieces and props first." />;
   const chosen = pieces.filter(p => selected[p.id]);
   return (
     <div className="cb-report">
-      <p className="cb-report-lede">Pick the pieces in your lineup to pull the full costume list.</p>
+      <p className="cb-report-lede">Pick the pieces in your lineup to pull the full prop list.</p>
       <div className="cb-runtime-list">
         {pieces.map(p => (
           <label className="cb-runtime-row" key={p.id}>
             <input type="checkbox" checked={!!selected[p.id]} onChange={e => setSelected({ ...selected, [p.id]: e.target.checked })} />
             <span className="cb-runtime-name">{p.name}</span>
-            <span className="cb-dim">{(costumesByPiece[p.id] || []).length} item{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+            <span className="cb-dim">{(propsByPiece[p.id] || []).length} item{(propsByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
           </label>
         ))}
       </div>
       {chosen.length > 0 && (
         <div className="cb-piece-groups">
           {chosen.map(p => {
-            const items = costumesByPiece[p.id] || [];
+            const items = propsByPiece[p.id] || [];
             return (
               <div className="cb-piece-group" key={p.id}>
                 <div className="cb-piece-group-head"><span className="cb-piece-group-name">{p.name}</span></div>
                 {items.length === 0 ? (
-                  <EmptyState text="No costume pieces logged for this number." />
+                  <EmptyState text="No props logged for this number." />
                 ) : (
                   <div className="cb-chiplist">{items.map(c => <span className="cb-chip cb-chip-static" key={c.id}>{c.name}</span>)}</div>
                 )}
@@ -1030,7 +1081,7 @@ function downloadCsv(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, costumesByPiece, castIds) {
+function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, propsByPiece, castIds) {
   const personById = Object.fromEntries(people.map(p => [p.id, p]));
   const lines = [];
 
@@ -1059,10 +1110,10 @@ function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people
   });
   lines.push("");
 
-  lines.push(csvRow(["Costumes"]));
-  lines.push(csvRow(["Sketch", "Costume Item"]));
+  lines.push(csvRow(["Props"]));
+  lines.push(csvRow(["Sketch", "Prop Item"]));
   option.pieces.forEach(p => {
-    const items = costumesByPiece[p.id] || [];
+    const items = propsByPiece[p.id] || [];
     if (items.length === 0) {
       lines.push(csvRow([p.name, ""]));
     } else {
@@ -1075,14 +1126,14 @@ function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people
 
 const TYPE_BADGE_LABEL = { opener: "Opener", closer: "Closer" };
 
-function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, costumesByPiece, people, castIds, onSaveShow }) {
-  const [showCostumes, setShowCostumes] = useState(false);
+function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, propsByPiece, people, castIds, onSaveShow }) {
+  const [showProps, setShowProps] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showName, setShowName] = useState("");
   const [saved, setSaved] = useState(false);
-  const costumeMap = {};
-  option.pieces.forEach(p => { costumeMap[p.id] = costumesByPiece[p.id] || []; });
-  const totalCostumes = Object.values(costumeMap).reduce((s, arr) => s + arr.length, 0);
+  const propMap = {};
+  option.pieces.forEach(p => { propMap[p.id] = propsByPiece[p.id] || []; });
+  const totalProps = Object.values(propMap).reduce((s, arr) => s + arr.length, 0);
 
   const confirmSave = () => {
     const n = showName.trim();
@@ -1107,23 +1158,23 @@ function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, co
           </li>
         ))}
       </ul>
-      <button className="cb-linklike cb-show-costume-toggle" onClick={() => setShowCostumes(s => !s)}>
-        {showCostumes ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        Costume list ({totalCostumes} item{totalCostumes === 1 ? "" : "s"})
+      <button className="cb-linklike cb-show-prop-toggle" onClick={() => setShowProps(s => !s)}>
+        {showProps ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        Prop list ({totalProps} item{totalProps === 1 ? "" : "s"})
       </button>
-      {showCostumes && (
-        <div className="cb-show-costumes">
+      {showProps && (
+        <div className="cb-show-props">
           {option.pieces.map(p => {
-            const items = costumeMap[p.id];
+            const items = propMap[p.id];
             if (items.length === 0) return null;
-            return <div key={p.id} className="cb-show-costume-group"><span className="cb-dim">{p.name}:</span> {items.map(c => c.name).join(", ")}</div>;
+            return <div key={p.id} className="cb-show-prop-group"><span className="cb-dim">{p.name}:</span> {items.map(c => c.name).join(", ")}</div>;
           })}
-          {totalCostumes === 0 && <span className="cb-dim">No costume pieces logged for this lineup.</span>}
+          {totalProps === 0 && <span className="cb-dim">No props logged for this lineup.</span>}
         </div>
       )}
       <button
         className="cb-btn cb-export-btn"
-        onClick={() => exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, costumesByPiece, castIds)}
+        onClick={() => exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, propsByPiece, castIds)}
       >
         <Download size={14} /> Export CSV
       </button>
@@ -1210,7 +1261,7 @@ function CastPresetPanel({ people, castIds, presets, onSave, onDelete, onLoad })
   );
 }
 
-function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, costumesByPiece, castPresets, onSavePreset, onDeletePreset, onSaveShow }) {
+function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, propsByPiece, castPresets, onSavePreset, onDeletePreset, onSaveShow }) {
   const [step, setStep] = useState(1);
   const [castIds, setCastIds] = useState(new Set());
   const [runtimeInput, setRuntimeInput] = useState("");
@@ -1321,7 +1372,7 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
                   <RunningOrderCard
                     key={i} option={opt} index={i}
                     tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
-                    costumesByPiece={costumesByPiece} people={people} castIds={castIds}
+                    propsByPiece={propsByPiece} people={people} castIds={castIds}
                     onSaveShow={onSaveShow}
                   />
                 ))}
@@ -1638,9 +1689,9 @@ const CSS = `
 .cb-show-option { display: flex; flex-direction: column; }
 .cb-show-piece-list { margin: 4px 0 10px; }
 .cb-show-piece-list li { display: flex; justify-content: space-between; gap: 8px; }
-.cb-show-costume-toggle { margin-top: auto; }
-.cb-show-costumes { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
-.cb-show-costume-group { line-height: 1.5; }
+.cb-show-prop-toggle { margin-top: auto; }
+.cb-show-props { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.cb-show-prop-group { line-height: 1.5; }
 .cb-export-btn { display: flex; align-items: center; gap: 6px; margin-top: 10px; justify-content: center; }
 
 .cb-type-select { margin-top: 10px; width: 100%; }
