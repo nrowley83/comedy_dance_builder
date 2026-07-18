@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download } from "lucide-react";
+import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download, Pencil, Check, Bookmark, Save } from "lucide-react";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 import * as db from "./lib/db";
 
@@ -84,7 +84,7 @@ export default function CallBoard() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("builder");
-  const [data, setData] = useState({ people: [], pieces: [], tracks: [], costumes: [], assignments: [] });
+  const [data, setData] = useState({ people: [], pieces: [], tracks: [], costumes: [], assignments: [], castPresets: [], savedShows: [] });
 
   const refresh = async () => {
     try {
@@ -107,7 +107,7 @@ export default function CallBoard() {
     if (session) refresh().then(() => setReady(true));
   }, [session]);
 
-  const { people, pieces, tracks, costumes, assignments } = data;
+  const { people, pieces, tracks, costumes, assignments, castPresets, savedShows } = data;
 
   const pieceById = useMemo(() => Object.fromEntries(pieces.map(p => [p.id, p])), [pieces]);
   const tracksByPiece = useMemo(() => {
@@ -157,6 +157,7 @@ export default function CallBoard() {
     deletePerson: run(db.deletePerson),
     addPiece: run(db.addPiece),
     deletePiece: run(db.deletePiece),
+    updatePiece: run(db.updatePiece),
     updatePieceType: run(db.updatePieceType),
     addTrack: run(db.addTrack),
     deleteTrack: run(db.deleteTrack),
@@ -164,6 +165,10 @@ export default function CallBoard() {
     deleteCostume: run(db.deleteCostume),
     addAssignment: run(db.addAssignment),
     deleteAssignment: run(db.deleteAssignment),
+    addCastPreset: run(db.addCastPreset),
+    deleteCastPreset: run(db.deleteCastPreset),
+    addSavedShow: run(db.addSavedShow),
+    deleteSavedShow: run(db.deleteSavedShow),
   };
 
   if (!supabaseConfigured) {
@@ -238,6 +243,8 @@ export default function CallBoard() {
           <BuildShowWizard
             people={people} pieces={pieces} tracksByPiece={tracksByPiece}
             assignmentsByTrack={assignmentsByTrack} costumesByPiece={costumesByPiece}
+            castPresets={castPresets} onSavePreset={actions.addCastPreset} onDeletePreset={actions.deleteCastPreset}
+            onSaveShow={actions.addSavedShow}
           />
         )}
         {tab === "people" && (
@@ -248,7 +255,8 @@ export default function CallBoard() {
         )}
         {tab === "pieces" && (
           <PiecesTab
-            pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece} onTypeChange={actions.updatePieceType}
+            pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece}
+            onEdit={actions.updatePiece} onTypeChange={actions.updatePieceType}
             tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
           />
         )}
@@ -263,6 +271,12 @@ export default function CallBoard() {
           <CostumesTab
             pieces={pieces} costumes={costumes} onAdd={actions.addCostume} onDelete={actions.deleteCostume}
             costumesByPiece={costumesByPiece}
+          />
+        )}
+        {tab === "savedshows" && (
+          <SavedShowsTab
+            people={people} pieces={pieces} tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+            savedShows={savedShows} onAdd={actions.addSavedShow} onDelete={actions.deleteSavedShow}
           />
         )}
         {tab === "reports" && (
@@ -317,6 +331,7 @@ const TABS = [
   { key: "pieces", label: "Pieces", icon: Music },
   { key: "tracks", label: "Tracks", icon: Route },
   { key: "costumes", label: "Costumes", icon: Shirt },
+  { key: "savedshows", label: "Saved Shows", icon: Bookmark },
   { key: "reports", label: "Reports", icon: ClipboardList },
 ];
 
@@ -393,7 +408,72 @@ const PIECE_TYPES = [
   { value: "closer", label: "Closer" },
 ];
 
-function PiecesTab({ pieces, onAdd, onDelete, onTypeChange, tracksByPiece, costumesByPiece }) {
+function PieceCard({ p, index, onDelete, onEdit, onTypeChange, tracksByPiece, costumesByPiece }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(p.name);
+  const [min, setMin] = useState(String(Math.floor((p.length || 0) / 60)));
+  const [sec, setSec] = useState(String((p.length || 0) % 60).padStart(2, "0"));
+
+  const startEdit = () => {
+    setName(p.name);
+    setMin(String(Math.floor((p.length || 0) / 60)));
+    setSec(String((p.length || 0) % 60).padStart(2, "0"));
+    setEditing(true);
+  };
+  const save = () => {
+    const n = name.trim();
+    if (!n) return;
+    const total = (parseInt(min || 0, 10) * 60) + parseInt(sec || 0, 10);
+    onEdit(p.id, n, total);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="cb-card">
+        <div className="cb-card-top">
+          <CueTag n={index + 1} prefix="PC" />
+          <div className="cb-card-edit-actions">
+            <button className="cb-icon-btn" onClick={save} title="Save"><Check size={14} /></button>
+            <button className="cb-icon-btn" onClick={() => setEditing(false)} title="Cancel"><X size={14} /></button>
+          </div>
+        </div>
+        <input className="cb-input cb-edit-name" value={name} onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && save()} autoFocus />
+        <div className="cb-addrow cb-edit-time">
+          <input className="cb-input cb-input-num" type="number" min="0" value={min}
+            onChange={e => setMin(e.target.value)} onKeyDown={e => e.key === "Enter" && save()} />
+          <span className="cb-colon">:</span>
+          <input className="cb-input cb-input-num" type="number" min="0" max="59" value={sec}
+            onChange={e => setSec(e.target.value)} onKeyDown={e => e.key === "Enter" && save()} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cb-card">
+      <div className="cb-card-top">
+        <CueTag n={index + 1} prefix="PC" />
+        <div className="cb-card-edit-actions">
+          <button className="cb-icon-btn" onClick={startEdit} title="Edit piece"><Pencil size={13} /></button>
+          <button className="cb-icon-btn" onClick={() => onDelete(p.id)} title="Remove piece"><Trash2 size={14} /></button>
+        </div>
+      </div>
+      <div className="cb-card-name">{p.name}</div>
+      <div className="cb-card-sub">
+        <span className="cb-mono cb-accent-text">{fmtTime(p.length)}</span>
+        <span className="cb-dim"> · {(tracksByPiece[p.id] || []).length} track{(tracksByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+        <span className="cb-dim"> · {(costumesByPiece[p.id] || []).length} costume{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+      </div>
+      <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
+        {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, tracksByPiece, costumesByPiece }) {
   const [name, setName] = useState("");
   const [min, setMin] = useState("");
   const [sec, setSec] = useState("");
@@ -426,21 +506,10 @@ function PiecesTab({ pieces, onAdd, onDelete, onTypeChange, tracksByPiece, costu
       {pieces.length === 0 && <EmptyState text="No pieces yet. Add one above with its run time." />}
       <div className="cb-card-grid">
         {pieces.map((p, i) => (
-          <div className="cb-card" key={p.id}>
-            <div className="cb-card-top">
-              <CueTag n={i + 1} prefix="PC" />
-              <button className="cb-icon-btn" onClick={() => onDelete(p.id)} title="Remove piece"><Trash2 size={14} /></button>
-            </div>
-            <div className="cb-card-name">{p.name}</div>
-            <div className="cb-card-sub">
-              <span className="cb-mono cb-accent-text">{fmtTime(p.length)}</span>
-              <span className="cb-dim"> · {(tracksByPiece[p.id] || []).length} track{(tracksByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
-              <span className="cb-dim"> · {(costumesByPiece[p.id] || []).length} costume{(costumesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
-            </div>
-            <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
-              {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-          </div>
+          <PieceCard
+            key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
+            tracksByPiece={tracksByPiece} costumesByPiece={costumesByPiece}
+          />
         ))}
       </div>
     </section>
@@ -792,10 +861,11 @@ function CastCoverageReport({ people, pieces, tracksByPiece, assignmentsByTrack 
 
 /* ---------------- Build a Show (wizard) ---------------- */
 
-function parseMMSS(str) {
-  const m = /^(\d{1,3}):([0-5]\d)$/.exec((str || "").trim());
-  if (!m) return null;
-  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+function parseMinutes(str) {
+  const s = (str || "").trim();
+  if (!/^\d{1,3}$/.test(s)) return null;
+  const n = parseInt(s, 10);
+  return n > 0 ? n * 60 : null;
 }
 
 // Openers/closers are fixed to the first/last slot; the remaining budget is
@@ -906,11 +976,23 @@ function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people
 
 const TYPE_BADGE_LABEL = { opener: "Opener", closer: "Closer" };
 
-function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, costumesByPiece, people, castIds }) {
+function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, costumesByPiece, people, castIds, onSaveShow }) {
   const [showCostumes, setShowCostumes] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showName, setShowName] = useState("");
+  const [saved, setSaved] = useState(false);
   const costumeMap = {};
   option.pieces.forEach(p => { costumeMap[p.id] = costumesByPiece[p.id] || []; });
   const totalCostumes = Object.values(costumeMap).reduce((s, arr) => s + arr.length, 0);
+
+  const confirmSave = () => {
+    const n = showName.trim();
+    if (!n) return;
+    onSaveShow(n, option.pieces.map(p => p.id));
+    setSaving(false);
+    setShowName("");
+    setSaved(true);
+  };
 
   return (
     <div className="cb-card cb-show-option">
@@ -946,6 +1028,18 @@ function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, co
       >
         <Download size={14} /> Export CSV
       </button>
+      {saving ? (
+        <div className="cb-save-show-row">
+          <input className="cb-input" placeholder="Show name" value={showName}
+            onChange={e => setShowName(e.target.value)} onKeyDown={e => e.key === "Enter" && confirmSave()} autoFocus />
+          <button className="cb-icon-btn" onClick={confirmSave} title="Confirm"><Check size={14} /></button>
+          <button className="cb-icon-btn" onClick={() => setSaving(false)} title="Cancel"><X size={14} /></button>
+        </div>
+      ) : (
+        <button className="cb-btn cb-export-btn" onClick={() => setSaving(true)}>
+          <Save size={14} /> {saved ? "Saved — save again?" : "Save show"}
+        </button>
+      )}
     </div>
   );
 }
@@ -974,7 +1068,50 @@ function CastDropdownPicker({ people, castIds, onAdd, onRemove }) {
   );
 }
 
-function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, costumesByPiece }) {
+function CastPresetPanel({ people, castIds, presets, onSave, onDelete, onLoad }) {
+  const [saving, setSaving] = useState(false);
+  const [presetName, setPresetName] = useState("");
+
+  const confirmSave = () => {
+    const n = presetName.trim();
+    if (!n) return;
+    onSave(n, Array.from(castIds));
+    setSaving(false);
+    setPresetName("");
+  };
+
+  return (
+    <div className="cb-preset-panel">
+      {saving ? (
+        <div className="cb-save-show-row">
+          <input className="cb-input" placeholder="Preset name" value={presetName}
+            onChange={e => setPresetName(e.target.value)} onKeyDown={e => e.key === "Enter" && confirmSave()} autoFocus />
+          <button className="cb-icon-btn" onClick={confirmSave} title="Confirm"><Check size={14} /></button>
+          <button className="cb-icon-btn" onClick={() => setSaving(false)} title="Cancel"><X size={14} /></button>
+        </div>
+      ) : (
+        <button className="cb-linklike" disabled={castIds.size === 0} onClick={() => setSaving(true)}>
+          <Save size={13} /> Save this cast as a preset
+        </button>
+      )}
+      {presets.length > 0 && (
+        <div className="cb-preset-list">
+          <span className="cb-report-label">Saved casts</span>
+          <div className="cb-chiplist">
+            {presets.map(preset => (
+              <span className="cb-chip cb-preset-chip" key={preset.id}>
+                <button className="cb-preset-load" onClick={() => onLoad(preset)}>{preset.name}</button>
+                <button className="cb-chip-x" onClick={() => onDelete(preset.id)}><X size={11} /></button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, costumesByPiece, castPresets, onSavePreset, onDeletePreset, onSaveShow }) {
   const [step, setStep] = useState(1);
   const [castIds, setCastIds] = useState(new Set());
   const [runtimeInput, setRuntimeInput] = useState("");
@@ -987,13 +1124,17 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
 
   const addToCast = (id) => setCastIds(new Set([...castIds, id]));
   const removeFromCast = (id) => { const next = new Set(castIds); next.delete(id); setCastIds(next); };
+  const loadPreset = (preset) => {
+    const validIds = new Set(people.map(p => p.id));
+    setCastIds(new Set(preset.personIds.filter(id => validIds.has(id))));
+  };
 
-  const targetSeconds = parseMMSS(runtimeInput);
+  const targetSeconds = parseMinutes(runtimeInput);
 
   const goToStep2 = () => setStep(2);
   const goToStep3 = () => {
-    const secs = parseMMSS(runtimeInput);
-    if (secs == null) { setRuntimeError("Enter runtime as MM:SS, e.g. 20:00"); return; }
+    const secs = parseMinutes(runtimeInput);
+    if (secs == null) { setRuntimeError("Enter runtime in minutes, e.g. 20"); return; }
     setRuntimeError(null);
     setStep(3);
   };
@@ -1019,6 +1160,10 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
         <div className="cb-report">
           <p className="cb-report-lede">Add everyone who's available for this show.</p>
           <CastDropdownPicker people={people} castIds={castIds} onAdd={addToCast} onRemove={removeFromCast} />
+          <CastPresetPanel
+            people={people} castIds={castIds} presets={castPresets}
+            onSave={onSavePreset} onDelete={onDeletePreset} onLoad={loadPreset}
+          />
           <button className="cb-btn cb-btn-accent cb-build-btn" disabled={castIds.size === 0} onClick={goToStep2}>
             Next
           </button>
@@ -1027,12 +1172,12 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
 
       {step === 2 && (
         <div className="cb-report">
-          <p className="cb-report-lede">How much time do you have for sketches? Enter it as MM:SS.</p>
+          <p className="cb-report-lede">How many minutes do you have for sketches?</p>
           <div className="cb-runtime-target">
-            <label>Runtime</label>
+            <label>Runtime (minutes)</label>
             <input
-              className="cb-input cb-input-num cb-input-mmss"
-              placeholder="20:00"
+              className="cb-input cb-input-num"
+              placeholder="20"
               value={runtimeInput}
               onChange={e => setRuntimeInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && goToStep3()}
@@ -1074,6 +1219,7 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
                     key={i} option={opt} index={i}
                     tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
                     costumesByPiece={costumesByPiece} people={people} castIds={castIds}
+                    onSaveShow={onSaveShow}
                   />
                 ))}
               </div>
@@ -1090,6 +1236,154 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
             <button className="cb-btn" onClick={() => setStep(2)}>Back</button>
             <button className="cb-btn" onClick={startOver}>Start over</button>
           </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- Saved Shows ---------------- */
+
+function PieceDropdownPicker({ pieces, orderedIds, onAdd, onRemove, pieceById }) {
+  const available = pieces.filter(p => !orderedIds.includes(p.id));
+  return (
+    <div>
+      <div className="cb-addrow">
+        <select className="cb-input cb-select-full" value="" onChange={e => e.target.value && onAdd(e.target.value)}>
+          <option value="">Add a piece…</option>
+          {available.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </div>
+      {orderedIds.length === 0 ? (
+        <EmptyState text="No pieces added yet — pick from the dropdown above, in the order you want them performed." />
+      ) : (
+        <ul className="cb-taglist cb-show-piece-list">
+          {orderedIds.map((id, i) => {
+            const p = pieceById[id];
+            if (!p) return null;
+            return (
+              <li key={id} className="cb-order-item">
+                <span>{i + 1}. {p.name}</span>
+                <span className="cb-order-item-right">
+                  <span className="cb-dim cb-mono">{fmtTime(p.length)}</span>
+                  <button className="cb-chip-x" onClick={() => onRemove(id)}><X size={11} /></button>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, potentialCastIds, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const showPieces = show.pieceIds.map(id => pieceById[id]).filter(Boolean);
+  const total = showPieces.reduce((s, p) => s + (p.length || 0), 0);
+
+  const coverage = potentialCastIds.size > 0
+    ? computeCoverage(showPieces, tracksByPiece, assignmentsByTrack, potentialCastIds)
+    : null;
+  const coverageByPieceId = {};
+  if (coverage) coverage.forEach(c => { coverageByPieceId[c.piece.id] = c; });
+  const missingCount = coverage ? coverage.filter(c => c.status !== "doable").length : 0;
+
+  return (
+    <div className="cb-card cb-show-option">
+      <div className="cb-card-top">
+        <button className="cb-linklike cb-saved-show-title" onClick={() => setExpanded(e => !e)}>
+          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          <span className="cb-card-name">{show.name}</span>
+        </button>
+        <button className="cb-icon-btn" onClick={() => onDelete(show.id)} title="Delete show"><Trash2 size={14} /></button>
+      </div>
+      <div className="cb-card-sub">
+        <span className="cb-mono cb-accent-text">{fmtTime(total)}</span>
+        <span className="cb-dim"> · {showPieces.length} piece{showPieces.length === 1 ? "" : "s"}</span>
+        {coverage && (
+          missingCount === 0
+            ? <span className="cb-coverage-good"> · Fully covered</span>
+            : <span className="cb-coverage-bad"> · Missing {missingCount}</span>
+        )}
+      </div>
+      {expanded && (
+        <ul className="cb-taglist cb-show-piece-list cb-saved-show-list">
+          {showPieces.map(p => {
+            const c = coverageByPieceId[p.id];
+            const notCovered = c && c.status !== "doable";
+            return (
+              <li key={p.id} className={notCovered ? "cb-piece-not-covered" : ""}>
+                <span>
+                  {p.name}{TYPE_BADGE_LABEL[p.type] && <span className="cb-type-badge"> {TYPE_BADGE_LABEL[p.type]}</span>}
+                  {notCovered && c.missing.length > 0 && (
+                    <span className="cb-not-covered-detail"> — missing: {c.missing.map(t => t.name).join(", ")}</span>
+                  )}
+                </span>
+                <span className="cb-dim cb-mono">{fmtTime(p.length)}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, savedShows, onAdd, onDelete }) {
+  const [orderedIds, setOrderedIds] = useState([]);
+  const [showName, setShowName] = useState("");
+  const [potentialCastIds, setPotentialCastIds] = useState(new Set());
+
+  const pieceById = Object.fromEntries(pieces.map(p => [p.id, p]));
+
+  const addPieceToOrder = (id) => setOrderedIds([...orderedIds, id]);
+  const removePieceFromOrder = (id) => setOrderedIds(orderedIds.filter(x => x !== id));
+  const addToCast = (id) => setPotentialCastIds(new Set([...potentialCastIds, id]));
+  const removeFromCast = (id) => { const next = new Set(potentialCastIds); next.delete(id); setPotentialCastIds(next); };
+
+  const saveShow = () => {
+    const n = showName.trim();
+    if (!n || orderedIds.length === 0) return;
+    onAdd(n, orderedIds);
+    setShowName("");
+    setOrderedIds([]);
+  };
+
+  if (pieces.length === 0) return <EmptyState text="Add pieces first (Pieces tab) before saving a show." />;
+
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Saved Shows</h2><span className="cb-count">{savedShows.length}</span></div>
+
+      <div className="cb-report">
+        <p className="cb-report-lede">Add potential cast members to see which saved shows they can fully cover — click a show below to see exactly what's missing.</p>
+        <CastDropdownPicker people={people} castIds={potentialCastIds} onAdd={addToCast} onRemove={removeFromCast} />
+      </div>
+
+      <div className="cb-report">
+        <p className="cb-report-lede">Build a new show by adding pieces in performance order.</p>
+        <PieceDropdownPicker pieces={pieces} orderedIds={orderedIds} onAdd={addPieceToOrder} onRemove={removePieceFromOrder} pieceById={pieceById} />
+        <div className="cb-save-show-row">
+          <input className="cb-input" placeholder="Show name" value={showName}
+            onChange={e => setShowName(e.target.value)} onKeyDown={e => e.key === "Enter" && saveShow()} />
+          <button className="cb-btn cb-btn-accent" disabled={!showName.trim() || orderedIds.length === 0} onClick={saveShow}>
+            <Save size={15} /> Save show
+          </button>
+        </div>
+      </div>
+
+      {savedShows.length === 0 ? (
+        <EmptyState text="No shows saved yet — build one above, or save a running order from Build a Show." />
+      ) : (
+        <div className="cb-card-grid cb-show-grid">
+          {savedShows.map(show => (
+            <SavedShowCard
+              key={show.id} show={show} pieceById={pieceById}
+              tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+              potentialCastIds={potentialCastIds} onDelete={onDelete}
+            />
+          ))}
         </div>
       )}
     </section>
@@ -1241,6 +1535,9 @@ const CSS = `
 .cb-type-select { margin-top: 10px; width: 100%; }
 .cb-select-full { width: 100%; }
 .cb-type-badge { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; margin-left: 6px; }
+.cb-card-edit-actions { display: flex; gap: 2px; }
+.cb-edit-name { width: 100%; margin-bottom: 8px; font-family: 'Oswald', sans-serif; font-size: 14.5px; }
+.cb-edit-time { margin-bottom: 0; }
 
 .cb-wizard-steps { display: flex; gap: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
 .cb-wizard-step { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; color: var(--text-dim); }
@@ -1248,6 +1545,24 @@ const CSS = `
 .cb-wizard-nav { display: flex; gap: 8px; margin-top: 18px; }
 .cb-wizard-checkboxes { display: flex; gap: 18px; margin-bottom: 16px; }
 .cb-input-mmss { flex: 0 0 100px; font-family: 'JetBrains Mono', monospace; text-align: center; }
+
+.cb-preset-panel { margin: 14px 0 18px; }
+.cb-preset-list { margin-top: 10px; }
+.cb-preset-chip { padding-left: 2px; }
+.cb-preset-load { background: none; border: none; color: var(--text); cursor: pointer; font-size: 12.5px; font-family: 'Inter', sans-serif; padding: 4px 4px 4px 8px; }
+.cb-preset-load:hover { color: var(--accent); }
+.cb-linklike:disabled { opacity: 0.4; cursor: not-allowed; }
+.cb-linklike:disabled:hover { text-decoration: none; }
+
+.cb-save-show-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+
+.cb-order-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cb-order-item-right { display: flex; align-items: center; gap: 6px; }
+
+.cb-saved-show-title { display: flex; align-items: center; gap: 6px; flex: 1; text-align: left; }
+.cb-saved-show-list { margin-top: 10px; }
+.cb-piece-not-covered { color: #ecb3ae; }
+.cb-not-covered-detail { color: #ecb3ae; font-size: 11.5px; }
 
 @media (max-width: 560px) {
   .cb-title { font-size: 24px; }

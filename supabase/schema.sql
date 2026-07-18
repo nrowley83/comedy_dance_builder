@@ -49,6 +49,20 @@ create table if not exists assignments (
   created_at timestamptz not null default now()
 );
 
+create table if not exists cast_presets (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  person_ids jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists saved_shows (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  piece_ids jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 -- Row Level Security ------------------------------------------------------
 -- Only signed-in users may read or write these tables. Combined with
 -- disabling public sign-up in Supabase Auth (see README), this means only
@@ -59,6 +73,8 @@ alter table pieces enable row level security;
 alter table tracks enable row level security;
 alter table costumes enable row level security;
 alter table assignments enable row level security;
+alter table cast_presets enable row level security;
+alter table saved_shows enable row level security;
 
 drop policy if exists "public access" on people;
 drop policy if exists "public access" on pieces;
@@ -71,9 +87,13 @@ drop policy if exists "authenticated access" on pieces;
 drop policy if exists "authenticated access" on tracks;
 drop policy if exists "authenticated access" on costumes;
 drop policy if exists "authenticated access" on assignments;
+drop policy if exists "authenticated access" on cast_presets;
+drop policy if exists "authenticated access" on saved_shows;
 
 create policy "authenticated access" on people for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on pieces for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on tracks for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on costumes for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on assignments for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authenticated access" on cast_presets for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authenticated access" on saved_shows for all using (auth.uid() is not null) with check (auth.uid() is not null);
