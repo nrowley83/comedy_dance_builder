@@ -10,12 +10,13 @@ const fmtTime = (totalSeconds) => {
   return `${m}:${String(sec).padStart(2, "0")}`;
 };
 
-function computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds) {
+function computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds, includeOptional = true) {
   return pieces.map(piece => {
     const ts = tracksByPiece[piece.id] || [];
     if (ts.length === 0) return { piece, status: "no-tracks", missing: [] };
+    const relevant = includeOptional ? ts : ts.filter(t => t.required !== false);
     const missing = [];
-    ts.forEach(t => {
+    relevant.forEach(t => {
       const asg = assignmentsByTrack[t.id] || [];
       const covered = asg.length > 0 && asg.some(a => availableIds.has(a.personId));
       if (!covered) missing.push(t);
@@ -161,6 +162,7 @@ export default function CallBoard() {
     updatePieceType: run(db.updatePieceType),
     addTrack: run(db.addTrack),
     deleteTrack: run(db.deleteTrack),
+    updateTrackRequired: run(db.updateTrackRequired),
     addCostume: run(db.addCostume),
     deleteCostume: run(db.deleteCostume),
     addAssignment: run(db.addAssignment),
@@ -263,6 +265,7 @@ export default function CallBoard() {
         {tab === "tracks" && (
           <TracksTab
             pieces={pieces} tracks={tracks} onAddTrack={actions.addTrack} onDeleteTrack={actions.deleteTrack}
+            onToggleRequired={actions.updateTrackRequired}
             people={people} onAssignPerson={actions.addAssignment} onRemoveAssignment={actions.deleteAssignment}
             assignmentsByTrack={assignmentsByTrack} personHasPieceConflict={personHasPieceConflict}
           />
@@ -342,6 +345,15 @@ function CueTag({ n, prefix }) {
 }
 function EmptyState({ text }) {
   return <div className="cb-empty">{text}</div>;
+}
+function ToggleSwitch({ label, checked, onChange }) {
+  return (
+    <label className="cb-toggle">
+      <input type="checkbox" className="cb-toggle-input" checked={checked} onChange={e => onChange(e.target.checked)} />
+      <span className="cb-toggle-track"><span className="cb-toggle-thumb" /></span>
+      <span className="cb-toggle-label">{label}</span>
+    </label>
+  );
 }
 function AddRow({ placeholder, onAdd, buttonLabel = "Add" }) {
   const [val, setVal] = useState("");
@@ -518,16 +530,18 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, tracksByPiec
 
 /* ---------------- Tracks (+ assignments) ---------------- */
 
-function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, people, onAssignPerson, onRemoveAssignment, assignmentsByTrack, personHasPieceConflict }) {
+function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired, people, onAssignPerson, onRemoveAssignment, assignmentsByTrack, personHasPieceConflict }) {
   const [newTrackName, setNewTrackName] = useState({});
+  const [newTrackOptional, setNewTrackOptional] = useState({});
   const [pickPerson, setPickPerson] = useState({});
   const [conflictMsg, setConflictMsg] = useState(null);
 
   const addTrack = (pieceId) => {
     const nm = (newTrackName[pieceId] || "").trim();
     if (!nm) return;
-    onAddTrack(nm, pieceId);
+    onAddTrack(nm, pieceId, !newTrackOptional[pieceId]);
     setNewTrackName({ ...newTrackName, [pieceId]: "" });
+    setNewTrackOptional({ ...newTrackOptional, [pieceId]: false });
   };
 
   const assignPerson = (trackId, pieceId, personId) => {
@@ -563,6 +577,11 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, people, onAssign
                   value={newTrackName[piece.id] || ""}
                   onChange={e => setNewTrackName({ ...newTrackName, [piece.id]: e.target.value })}
                   onKeyDown={e => { if (e.key === "Enter") addTrack(piece.id); }} />
+                <label className="cb-inline-checkbox">
+                  <input type="checkbox" checked={!!newTrackOptional[piece.id]}
+                    onChange={e => setNewTrackOptional({ ...newTrackOptional, [piece.id]: e.target.checked })} />
+                  Optional
+                </label>
                 <button className="cb-btn cb-btn-accent" onClick={() => addTrack(piece.id)}><Plus size={15} /> Add track</button>
               </div>
               {theseTracks.length === 0 && <EmptyState text="No tracks in this piece yet." />}
@@ -572,7 +591,7 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, people, onAssign
                   <div className="cb-track-row" key={t.id}>
                     <div className="cb-track-row-top">
                       <span className="cb-mono cb-cue-inline">T-{String(i + 1).padStart(2, "0")}</span>
-                      <span className="cb-track-name">{t.name}</span>
+                      <span className="cb-track-name">{t.name}{t.required === false && <span className="cb-type-badge"> Optional</span>}</span>
                       <button className="cb-icon-btn" onClick={() => onDeleteTrack(t.id)} title="Remove track"><Trash2 size={14} /></button>
                     </div>
                     <div className="cb-track-people">
@@ -590,6 +609,7 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, people, onAssign
                         <option value="">+ assign person…</option>
                         {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
+                      <ToggleSwitch label="Optional" checked={t.required === false} onChange={checked => onToggleRequired(t.id, !checked)} />
                     </div>
                   </div>
                 );
@@ -870,8 +890,8 @@ function parseMinutes(str) {
 
 // Openers/closers are fixed to the first/last slot; the remaining budget is
 // filled with Normal-type pieces via the same subset-sum search used elsewhere.
-function buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, maxResults = 10) {
-  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, castIds);
+function buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, includeOptional, maxResults = 10) {
+  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, castIds, includeOptional);
   const doable = coverage.filter(c => c.status === "doable").map(c => c.piece);
   const missing = coverage.filter(c => c.status === "missing").map(c => c.piece);
 
@@ -1116,8 +1136,9 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
   const [castIds, setCastIds] = useState(new Set());
   const [runtimeInput, setRuntimeInput] = useState("");
   const [runtimeError, setRuntimeError] = useState(null);
-  const [noOpener, setNoOpener] = useState(false);
-  const [noCloser, setNoCloser] = useState(false);
+  const [openerOn, setOpenerOn] = useState(true);
+  const [closerOn, setCloserOn] = useState(true);
+  const [optionalOn, setOptionalOn] = useState(true);
 
   if (people.length === 0) return <EmptyState text="Add people first (People tab) before building a show." />;
   if (pieces.length === 0) return <EmptyState text="Add pieces first (Pieces tab) before building a show." />;
@@ -1140,11 +1161,11 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
   };
   const startOver = () => {
     setStep(1); setCastIds(new Set()); setRuntimeInput(""); setRuntimeError(null);
-    setNoOpener(false); setNoCloser(false);
+    setOpenerOn(true); setCloserOn(true); setOptionalOn(true);
   };
 
   const built = step === 3
-    ? buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, 10)
+    ? buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, !openerOn, !closerOn, optionalOn, 10)
     : null;
 
   return (
@@ -1196,19 +1217,20 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, co
           <p className="cb-report-lede">
             {(people.filter(p => castIds.has(p.id)).length)} available, {fmtTime(targetSeconds)} to fill.
           </p>
-          <div className="cb-wizard-checkboxes">
-            <label className="cb-runtime-row"><input type="checkbox" checked={noOpener} onChange={e => setNoOpener(e.target.checked)} /> No opener</label>
-            <label className="cb-runtime-row"><input type="checkbox" checked={noCloser} onChange={e => setNoCloser(e.target.checked)} /> No closer</label>
+          <div className="cb-toggle-row">
+            <ToggleSwitch label="Opener" checked={openerOn} onChange={setOpenerOn} />
+            <ToggleSwitch label="Closer" checked={closerOn} onChange={setCloserOn} />
+            <ToggleSwitch label="Include Optional Tracks" checked={optionalOn} onChange={setOptionalOn} />
           </div>
 
           {built.blocked === "opener" && (
-            <EmptyState text="No opener is doable with this cast. Check 'No opener' to build a running order without one, cast more people, or add an Opener-type piece." />
+            <EmptyState text="No opener is doable with this cast. Turn the Opener toggle off to build a running order without one, cast more people, or add an Opener-type piece." />
           )}
           {built.blocked === "closer" && (
-            <EmptyState text="No closer is doable with this cast. Check 'No closer' to build a running order without one, cast more people, or add a Closer-type piece." />
+            <EmptyState text="No closer is doable with this cast. Turn the Closer toggle off to build a running order without one, cast more people, or add a Closer-type piece." />
           )}
           {!built.blocked && built.options.length === 0 && (
-            <EmptyState text="No running order fits — try more time, a different cast, or the No opener/No closer checkboxes." />
+            <EmptyState text="No running order fits — try more time, a different cast, or the Opener/Closer toggles." />
           )}
           {!built.blocked && built.options.length > 0 && (
             <>
@@ -1277,13 +1299,13 @@ function PieceDropdownPicker({ pieces, orderedIds, onAdd, onRemove, pieceById })
   );
 }
 
-function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, potentialCastIds, onDelete }) {
+function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, potentialCastIds, includeOptional, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const showPieces = show.pieceIds.map(id => pieceById[id]).filter(Boolean);
   const total = showPieces.reduce((s, p) => s + (p.length || 0), 0);
 
   const coverage = potentialCastIds.size > 0
-    ? computeCoverage(showPieces, tracksByPiece, assignmentsByTrack, potentialCastIds)
+    ? computeCoverage(showPieces, tracksByPiece, assignmentsByTrack, potentialCastIds, includeOptional)
     : null;
   const coverageByPieceId = {};
   if (coverage) coverage.forEach(c => { coverageByPieceId[c.piece.id] = c; });
@@ -1334,6 +1356,7 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
   const [orderedIds, setOrderedIds] = useState([]);
   const [showName, setShowName] = useState("");
   const [potentialCastIds, setPotentialCastIds] = useState(new Set());
+  const [includeOptional, setIncludeOptional] = useState(true);
 
   const pieceById = Object.fromEntries(pieces.map(p => [p.id, p]));
 
@@ -1359,6 +1382,9 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
       <div className="cb-report">
         <p className="cb-report-lede">Add potential cast members to see which saved shows they can fully cover — click a show below to see exactly what's missing.</p>
         <CastDropdownPicker people={people} castIds={potentialCastIds} onAdd={addToCast} onRemove={removeFromCast} />
+        <div className="cb-toggle-row">
+          <ToggleSwitch label="Include Optional Tracks" checked={includeOptional} onChange={setIncludeOptional} />
+        </div>
       </div>
 
       <div className="cb-report">
@@ -1381,6 +1407,7 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
             <SavedShowCard
               key={show.id} show={show} pieceById={pieceById}
               tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+              includeOptional={includeOptional}
               potentialCastIds={potentialCastIds} onDelete={onDelete}
             />
           ))}
@@ -1543,8 +1570,18 @@ const CSS = `
 .cb-wizard-step { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; color: var(--text-dim); }
 .cb-wizard-step-active { color: var(--accent); }
 .cb-wizard-nav { display: flex; gap: 8px; margin-top: 18px; }
-.cb-wizard-checkboxes { display: flex; gap: 18px; margin-bottom: 16px; }
-.cb-input-mmss { flex: 0 0 100px; font-family: 'JetBrains Mono', monospace; text-align: center; }
+.cb-toggle-row { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 16px; }
+.cb-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12.5px; }
+.cb-toggle-input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.cb-toggle-track { width: 34px; height: 18px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); position: relative; transition: background 0.15s ease, border-color 0.15s ease; flex-shrink: 0; }
+.cb-toggle-thumb { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: transform 0.15s ease, background 0.15s ease; }
+.cb-toggle-input:checked + .cb-toggle-track { background: var(--accent); border-color: var(--accent); }
+.cb-toggle-input:checked + .cb-toggle-track .cb-toggle-thumb { transform: translateX(16px); background: #1a1408; }
+.cb-toggle-input:focus-visible + .cb-toggle-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cb-toggle-label { color: var(--text); }
+
+.cb-inline-checkbox { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; }
+.cb-inline-checkbox input { accent-color: var(--accent); width: 15px; height: 15px; }
 
 .cb-preset-panel { margin: 14px 0 18px; }
 .cb-preset-list { margin-top: 10px; }

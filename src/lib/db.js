@@ -2,7 +2,7 @@ import { supabase } from "./supabase";
 
 const mapPerson = (r) => ({ id: r.id, name: r.name });
 const mapPiece = (r) => ({ id: r.id, name: r.name, length: r.length_seconds, type: r.type || "normal" });
-const mapTrack = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id });
+const mapTrack = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id, required: r.required !== false });
 const mapCostume = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id });
 const mapAssignment = (r) => ({ id: r.id, personId: r.person_id, trackId: r.track_id });
 const mapCastPreset = (r) => ({ id: r.id, name: r.name, personIds: r.person_ids || [] });
@@ -54,8 +54,11 @@ export async function deletePiece(id) {
   check(await supabase.from("pieces").delete().eq("id", id));
 }
 
-export async function addTrack(name, pieceId) {
-  return mapTrack(check(await supabase.from("tracks").insert({ name, piece_id: pieceId }).select().single()));
+export async function addTrack(name, pieceId, required = true) {
+  return mapTrack(check(await supabase.from("tracks").insert({ name, piece_id: pieceId, required }).select().single()));
+}
+export async function updateTrackRequired(id, required) {
+  return mapTrack(check(await supabase.from("tracks").update({ required }).eq("id", id).select().single()));
 }
 export async function deleteTrack(id) {
   check(await supabase.from("tracks").delete().eq("id", id));

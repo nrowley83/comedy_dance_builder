@@ -32,8 +32,12 @@ create table if not exists tracks (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   piece_id uuid not null references pieces(id) on delete cascade,
+  required boolean not null default true,
   created_at timestamptz not null default now()
 );
+
+-- Migration safety net for projects created before "required" existed.
+alter table tracks add column if not exists required boolean not null default true;
 
 create table if not exists costumes (
   id uuid primary key default gen_random_uuid(),
