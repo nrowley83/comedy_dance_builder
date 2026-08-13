@@ -8,6 +8,7 @@ const mapAssignment = (r) => ({ id: r.id, personId: r.person_id, roleId: r.role_
 const mapCastPreset = (r) => ({ id: r.id, name: r.name, personIds: r.person_ids || [] });
 const mapSavedShow = (r) => ({ id: r.id, name: r.name, pieceIds: r.piece_ids || [], trackIds: r.track_ids || [] });
 const mapTrack = (r) => ({ id: r.id, name: r.name });
+const mapTrackAssignment = (r) => ({ id: r.id, trackId: r.track_id, personId: r.person_id });
 
 function check(res) {
   if (res.error) throw res.error;
@@ -15,7 +16,7 @@ function check(res) {
 }
 
 export async function fetchAll() {
-  const [people, pieces, roles, props, assignments, castPresets, savedShows, tracks] = await Promise.all([
+  const [people, pieces, roles, props, assignments, castPresets, savedShows, tracks, trackAssignments] = await Promise.all([
     supabase.from("people").select("*").order("name"),
     supabase.from("pieces").select("*").order("name"),
     supabase.from("roles").select("*"),
@@ -24,6 +25,7 @@ export async function fetchAll() {
     supabase.from("cast_presets").select("*").order("name"),
     supabase.from("saved_shows").select("*").order("created_at", { ascending: false }),
     supabase.from("tracks").select("*").order("name"),
+    supabase.from("track_assignments").select("*"),
   ]);
   return {
     people: check(people).map(mapPerson),
@@ -34,6 +36,7 @@ export async function fetchAll() {
     castPresets: check(castPresets).map(mapCastPreset),
     savedShows: check(savedShows).map(mapSavedShow),
     tracks: check(tracks).map(mapTrack),
+    trackAssignments: check(trackAssignments).map(mapTrackAssignment),
   };
 }
 
@@ -118,4 +121,11 @@ export async function updateTrackName(id, name) {
 }
 export async function deleteTrack(id) {
   check(await supabase.from("tracks").delete().eq("id", id));
+}
+
+export async function addTrackAssignment(trackId, personId) {
+  return mapTrackAssignment(check(await supabase.from("track_assignments").insert({ track_id: trackId, person_id: personId }).select().single()));
+}
+export async function deleteTrackAssignment(id) {
+  check(await supabase.from("track_assignments").delete().eq("id", id));
 }

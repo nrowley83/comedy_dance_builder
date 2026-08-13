@@ -86,7 +86,7 @@ export default function CallBoard() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("builder");
-  const [data, setData] = useState({ people: [], pieces: [], roles: [], props: [], assignments: [], castPresets: [], savedShows: [], tracks: [] });
+  const [data, setData] = useState({ people: [], pieces: [], roles: [], props: [], assignments: [], castPresets: [], savedShows: [], tracks: [], trackAssignments: [] });
 
   const refresh = async () => {
     try {
@@ -109,7 +109,7 @@ export default function CallBoard() {
     if (session) refresh().then(() => setReady(true));
   }, [session]);
 
-  const { people, pieces, roles, props, assignments, castPresets, savedShows, tracks } = data;
+  const { people, pieces, roles, props, assignments, castPresets, savedShows, tracks, trackAssignments } = data;
 
   const pieceById = useMemo(() => Object.fromEntries(pieces.map(p => [p.id, p])), [pieces]);
   const rolesByPiece = useMemo(() => {
@@ -180,6 +180,8 @@ export default function CallBoard() {
     addTrack: run(db.addTrack),
     deleteTrack: run(db.deleteTrack),
     updateTrackName: run(db.updateTrackName),
+    addTrackAssignment: run(db.addTrackAssignment),
+    deleteTrackAssignment: run(db.deleteTrackAssignment),
   };
 
   if (!supabaseConfigured) {
@@ -290,9 +292,13 @@ export default function CallBoard() {
         )}
         {tab === "tracks" && (
           <TracksTab
-            tracks={tracks} roles={roles} pieces={pieces}
+            tracks={tracks} roles={roles} pieces={pieces} people={people}
+            assignmentsByRole={assignmentsByRole}
             onAdd={actions.addTrack} onDelete={actions.deleteTrack} onRename={actions.updateTrackName}
             onSetRoleTrack={actions.updateRoleTrack}
+            trackAssignments={trackAssignments}
+            onAddTrackAssignment={actions.addTrackAssignment}
+            onRemoveTrackAssignment={actions.deleteTrackAssignment}
           />
         )}
         {tab === "savedshows" && (
@@ -1507,7 +1513,31 @@ function BuildShowWizard({ people, pieces, rolesByPiece, assignmentsByRole, prop
 
 /* ---------------- Tracks (role-grouping entity) ---------------- */
 
-function TrackCard({ track, rolesInTrack, pieceById, onDelete, onRename, roleOptions, onAddRole, onRemoveRole }) {
+function TrackMemberRow({ person, rolesInTrack, assignmentsByRole, onRemove }) {
+  const missing = rolesInTrack.filter(r => {
+    const asg = assignmentsByRole[r.id] || [];
+    return !asg.some(a => a.personId === person.id);
+  });
+  return (
+    <div className="cb-track-member-row">
+      <span className="cb-chip">
+        {person.name}
+        <button className="cb-chip-x" onClick={onRemove}><X size={11} /></button>
+      </span>
+      {rolesInTrack.length > 0 && (
+        missing.length === 0 ? (
+          <span className="cb-coverage-good cb-track-member-status"> · Has every role</span>
+        ) : (
+          <span className="cb-track-member-missing">
+            Missing: {missing.map(r => r.name).join(", ")}
+          </span>
+        )
+      )}
+    </div>
+  );
+}
+
+function TrackCard({ track, rolesInTrack, pieceById, onDelete, onRename, roleOptions, onAddRole, onRemoveRole, people, memberAssignments, assignmentsByRole, onAddMember, onRemoveMember }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(track.name);
 
@@ -1518,6 +1548,9 @@ function TrackCard({ track, rolesInTrack, pieceById, onDelete, onRename, roleOpt
     onRename(track.id, n);
     setEditing(false);
   };
+
+  const memberIds = new Set(memberAssignments.map(a => a.personId));
+  const availablePeople = people.filter(p => !memberIds.has(p.id));
 
   return (
     <div className="cb-card">
@@ -1541,34 +1574,65 @@ function TrackCard({ track, rolesInTrack, pieceById, onDelete, onRename, roleOpt
           </>
         )}
       </div>
-      {rolesInTrack.length === 0 ? (
-        <EmptyState text="No roles grouped into this track yet." />
-      ) : (
-        <ul className="cb-taglist">
-          {rolesInTrack.map(r => {
+
+      <div className="cb-track-members">
+        <span className="cb-report-label">People on this track</span>
+        {memberAssignments.length === 0 ? (
+          <EmptyState text="No one assigned to this track yet." />
+        ) : (
+          <div className="cb-track-member-list">
+            {memberAssignments.map(a => {
+              const person = people.find(p => p.id === a.personId);
+              if (!person) return null;
+              return (
+                <TrackMemberRow
+                  key={a.id} person={person} rolesInTrack={rolesInTrack}
+                  assignmentsByRole={assignmentsByRole} onRemove={() => onRemoveMember(a.id)}
+                />
+              );
+            })}
+          </div>
+        )}
+        {availablePeople.length > 0 && (
+          <select className="cb-input cb-select-full" value=""
+            onChange={e => e.target.value && onAddMember(e.target.value)}>
+            <option value="">+ assign a person to this track…</option>
+            {availablePeople.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      <div className="cb-track-roles">
+        <span className="cb-report-label">Roles in this track</span>
+        {rolesInTrack.length === 0 ? (
+          <EmptyState text="No roles grouped into this track yet." />
+        ) : (
+          <ul className="cb-taglist">
+            {rolesInTrack.map(r => {
+              const piece = pieceById[r.pieceId];
+              return (
+                <li key={r.id} className="cb-order-item">
+                  <span>{r.name} <span className="cb-dim">— {piece ? piece.name : "?"}</span></span>
+                  <button className="cb-chip-x" onClick={() => onRemoveRole(r.id)}><X size={11} /></button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <select className="cb-input cb-select-full cb-track-add-role" value=""
+          onChange={e => e.target.value && onAddRole(e.target.value)}>
+          <option value="">+ add a role to this track…</option>
+          {roleOptions.map(r => {
             const piece = pieceById[r.pieceId];
-            return (
-              <li key={r.id} className="cb-order-item">
-                <span>{r.name} <span className="cb-dim">— {piece ? piece.name : "?"}</span></span>
-                <button className="cb-chip-x" onClick={() => onRemoveRole(r.id)}><X size={11} /></button>
-              </li>
-            );
+            return <option key={r.id} value={r.id}>{r.name} — {piece ? piece.name : "?"}</option>;
           })}
-        </ul>
-      )}
-      <select className="cb-input cb-select-full cb-track-add-role" value=""
-        onChange={e => e.target.value && onAddRole(e.target.value)}>
-        <option value="">+ add a role to this track…</option>
-        {roleOptions.map(r => {
-          const piece = pieceById[r.pieceId];
-          return <option key={r.id} value={r.id}>{r.name} — {piece ? piece.name : "?"}</option>;
-        })}
-      </select>
+        </select>
+      </div>
     </div>
   );
 }
 
-function TracksTab({ tracks, roles, pieces, onAdd, onDelete, onRename, onSetRoleTrack }) {
+function TracksTab({ tracks, roles, pieces, people, assignmentsByRole, onAdd, onDelete, onRename, onSetRoleTrack, trackAssignments, onAddTrackAssignment, onRemoveTrackAssignment }) {
   const [newName, setNewName] = useState("");
 
   const pieceById = Object.fromEntries(pieces.map(p => [p.id, p]));
@@ -1592,12 +1656,16 @@ function TracksTab({ tracks, roles, pieces, onAdd, onDelete, onRename, onSetRole
           {tracks.map(track => {
             const rolesInTrack = roles.filter(r => r.trackId === track.id);
             const roleOptions = roles.filter(r => r.trackId !== track.id);
+            const memberAssignments = trackAssignments.filter(a => a.trackId === track.id);
             return (
               <TrackCard
                 key={track.id} track={track} rolesInTrack={rolesInTrack} pieceById={pieceById}
                 onDelete={onDelete} onRename={onRename} roleOptions={roleOptions}
                 onAddRole={(roleId) => onSetRoleTrack(roleId, track.id)}
                 onRemoveRole={(roleId) => onSetRoleTrack(roleId, null)}
+                people={people} memberAssignments={memberAssignments} assignmentsByRole={assignmentsByRole}
+                onAddMember={(personId) => onAddTrackAssignment(track.id, personId)}
+                onRemoveMember={onRemoveTrackAssignment}
               />
             );
           })}
@@ -1995,6 +2063,13 @@ const CSS = `
 .cb-track-add-role { margin-top: 12px; }
 .cb-saved-show-tracks { margin-top: 10px; }
 .cb-saved-show-track-add { margin-top: 8px; }
+
+.cb-track-members { margin: 14px 0; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.cb-track-roles { margin-top: 4px; }
+.cb-track-member-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.cb-track-member-row { display: flex; flex-direction: column; gap: 4px; }
+.cb-track-member-status { font-size: 12px; }
+.cb-track-member-missing { color: #ecb3ae; font-size: 12px; padding-left: 2px; }
 
 @media (max-width: 560px) {
   .cb-title { font-size: 24px; }

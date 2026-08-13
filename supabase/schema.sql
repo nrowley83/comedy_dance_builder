@@ -129,6 +129,16 @@ create table if not exists saved_shows (
 
 alter table saved_shows add column if not exists track_ids jsonb not null default '[]'::jsonb;
 
+-- Direct Person <-> Track membership (separate from per-role assignments).
+-- A track can have multiple people (rotating cast); this is used to check
+-- which of a track's roles that person still needs to be assigned to.
+create table if not exists track_assignments (
+  id uuid primary key default gen_random_uuid(),
+  track_id uuid not null references tracks(id) on delete cascade,
+  person_id uuid not null references people(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
 -- Row Level Security ------------------------------------------------------
 -- Only signed-in users may read or write these tables. Combined with
 -- disabling public sign-up in Supabase Auth (see README), this means only
@@ -142,6 +152,7 @@ alter table props enable row level security;
 alter table assignments enable row level security;
 alter table cast_presets enable row level security;
 alter table saved_shows enable row level security;
+alter table track_assignments enable row level security;
 
 drop policy if exists "authenticated access" on people;
 drop policy if exists "authenticated access" on pieces;
@@ -151,6 +162,7 @@ drop policy if exists "authenticated access" on props;
 drop policy if exists "authenticated access" on assignments;
 drop policy if exists "authenticated access" on cast_presets;
 drop policy if exists "authenticated access" on saved_shows;
+drop policy if exists "authenticated access" on track_assignments;
 
 create policy "authenticated access" on people for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on pieces for all using (auth.uid() is not null) with check (auth.uid() is not null);
@@ -160,3 +172,4 @@ create policy "authenticated access" on props for all using (auth.uid() is not n
 create policy "authenticated access" on assignments for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on cast_presets for all using (auth.uid() is not null) with check (auth.uid() is not null);
 create policy "authenticated access" on saved_shows for all using (auth.uid() is not null) with check (auth.uid() is not null);
+create policy "authenticated access" on track_assignments for all using (auth.uid() is not null) with check (auth.uid() is not null);
