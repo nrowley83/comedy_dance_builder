@@ -1,12 +1,13 @@
 import { supabase } from "./supabase";
 
 const mapPerson = (r) => ({ id: r.id, name: r.name });
-const mapPiece = (r) => ({ id: r.id, name: r.name, length: r.length_seconds, type: r.type || "normal", archived: r.archived === true });
-const mapTrack = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id, required: r.required !== false });
+const mapPiece = (r) => ({ id: r.id, name: r.name, length: r.length_seconds, type: r.type || "normal", archived: r.archived === true, energy: r.energy || "Medium" });
+const mapRole = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id, required: r.required !== false, trackId: r.track_id || null });
 const mapProp = (r) => ({ id: r.id, name: r.name, pieceId: r.piece_id });
-const mapAssignment = (r) => ({ id: r.id, personId: r.person_id, trackId: r.track_id });
+const mapAssignment = (r) => ({ id: r.id, personId: r.person_id, roleId: r.role_id });
 const mapCastPreset = (r) => ({ id: r.id, name: r.name, personIds: r.person_ids || [] });
-const mapSavedShow = (r) => ({ id: r.id, name: r.name, pieceIds: r.piece_ids || [] });
+const mapSavedShow = (r) => ({ id: r.id, name: r.name, pieceIds: r.piece_ids || [], trackIds: r.track_ids || [] });
+const mapTrack = (r) => ({ id: r.id, name: r.name });
 
 function check(res) {
   if (res.error) throw res.error;
@@ -14,23 +15,25 @@ function check(res) {
 }
 
 export async function fetchAll() {
-  const [people, pieces, tracks, props, assignments, castPresets, savedShows] = await Promise.all([
+  const [people, pieces, roles, props, assignments, castPresets, savedShows, tracks] = await Promise.all([
     supabase.from("people").select("*").order("name"),
     supabase.from("pieces").select("*").order("name"),
-    supabase.from("tracks").select("*"),
+    supabase.from("roles").select("*"),
     supabase.from("props").select("*"),
     supabase.from("assignments").select("*"),
     supabase.from("cast_presets").select("*").order("name"),
     supabase.from("saved_shows").select("*").order("created_at", { ascending: false }),
+    supabase.from("tracks").select("*").order("name"),
   ]);
   return {
     people: check(people).map(mapPerson),
     pieces: check(pieces).map(mapPiece),
-    tracks: check(tracks).map(mapTrack),
+    roles: check(roles).map(mapRole),
     props: check(props).map(mapProp),
     assignments: check(assignments).map(mapAssignment),
     castPresets: check(castPresets).map(mapCastPreset),
     savedShows: check(savedShows).map(mapSavedShow),
+    tracks: check(tracks).map(mapTrack),
   };
 }
 
@@ -41,8 +44,8 @@ export async function deletePerson(id) {
   check(await supabase.from("people").delete().eq("id", id));
 }
 
-export async function addPiece(name, length, type = "normal") {
-  return mapPiece(check(await supabase.from("pieces").insert({ name, length_seconds: length, type }).select().single()));
+export async function addPiece(name, length, type = "normal", energy = "Medium") {
+  return mapPiece(check(await supabase.from("pieces").insert({ name, length_seconds: length, type, energy }).select().single()));
 }
 export async function updatePiece(id, name, length) {
   return mapPiece(check(await supabase.from("pieces").update({ name, length_seconds: length }).eq("id", id).select().single()));
@@ -53,18 +56,27 @@ export async function updatePieceType(id, type) {
 export async function updatePieceArchived(id, archived) {
   return mapPiece(check(await supabase.from("pieces").update({ archived }).eq("id", id).select().single()));
 }
+export async function updatePieceEnergy(id, energy) {
+  return mapPiece(check(await supabase.from("pieces").update({ energy }).eq("id", id).select().single()));
+}
 export async function deletePiece(id) {
   check(await supabase.from("pieces").delete().eq("id", id));
 }
 
-export async function addTrack(name, pieceId, required = true) {
-  return mapTrack(check(await supabase.from("tracks").insert({ name, piece_id: pieceId, required }).select().single()));
+export async function addRole(name, pieceId, required = true) {
+  return mapRole(check(await supabase.from("roles").insert({ name, piece_id: pieceId, required }).select().single()));
 }
-export async function updateTrackRequired(id, required) {
-  return mapTrack(check(await supabase.from("tracks").update({ required }).eq("id", id).select().single()));
+export async function updateRoleName(id, name) {
+  return mapRole(check(await supabase.from("roles").update({ name }).eq("id", id).select().single()));
 }
-export async function deleteTrack(id) {
-  check(await supabase.from("tracks").delete().eq("id", id));
+export async function updateRoleRequired(id, required) {
+  return mapRole(check(await supabase.from("roles").update({ required }).eq("id", id).select().single()));
+}
+export async function updateRoleTrack(id, trackId) {
+  return mapRole(check(await supabase.from("roles").update({ track_id: trackId }).eq("id", id).select().single()));
+}
+export async function deleteRole(id) {
+  check(await supabase.from("roles").delete().eq("id", id));
 }
 
 export async function addProp(name, pieceId) {
@@ -74,8 +86,8 @@ export async function deleteProp(id) {
   check(await supabase.from("props").delete().eq("id", id));
 }
 
-export async function addAssignment(personId, trackId) {
-  return mapAssignment(check(await supabase.from("assignments").insert({ person_id: personId, track_id: trackId }).select().single()));
+export async function addAssignment(personId, roleId) {
+  return mapAssignment(check(await supabase.from("assignments").insert({ person_id: personId, role_id: roleId }).select().single()));
 }
 export async function deleteAssignment(id) {
   check(await supabase.from("assignments").delete().eq("id", id));
@@ -91,6 +103,19 @@ export async function deleteCastPreset(id) {
 export async function addSavedShow(name, pieceIds) {
   return mapSavedShow(check(await supabase.from("saved_shows").insert({ name, piece_ids: pieceIds }).select().single()));
 }
+export async function updateSavedShowTracks(id, trackIds) {
+  return mapSavedShow(check(await supabase.from("saved_shows").update({ track_ids: trackIds }).eq("id", id).select().single()));
+}
 export async function deleteSavedShow(id) {
   check(await supabase.from("saved_shows").delete().eq("id", id));
+}
+
+export async function addTrack(name) {
+  return mapTrack(check(await supabase.from("tracks").insert({ name }).select().single()));
+}
+export async function updateTrackName(id, name) {
+  return mapTrack(check(await supabase.from("tracks").update({ name }).eq("id", id).select().single()));
+}
+export async function deleteTrack(id) {
+  check(await supabase.from("tracks").delete().eq("id", id));
 }

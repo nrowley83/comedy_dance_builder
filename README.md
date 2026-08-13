@@ -1,9 +1,9 @@
 # The Call Board
 
-A recital/show planning tool: track your people, pieces, tracks, and
+A recital/show planning tool: track your people, pieces, roles, and
 props, then use Reports to build a show from whatever cast and time
-you've got. Data lives in a Supabase (Postgres) database — 5 real SQL
-tables under the hood — behind a login screen only you can get past.
+you've got. Data lives in a Supabase (Postgres) database behind a
+login screen only you can get past.
 
 ## 1. Create the Supabase project
 
@@ -12,18 +12,14 @@ tables under the hood — behind a login screen only you can get past.
    database password day-to-day, just save it somewhere).
 2. Once it's provisioned, open **SQL Editor** in the left sidebar, click
    **New query**, paste in the contents of `supabase/schema.sql` from
-   this repo, and run it. That creates the `people`, `pieces`, `tracks`,
-   `props`, `assignments`, `cast_presets`, and `saved_shows` tables,
+   this repo, and run it. That creates `people`, `pieces`, `roles`,
+   `tracks`, `props`, `assignments`, `cast_presets`, and `saved_shows`,
    and locks every one of them down to signed-in users only. (If you'd
    already run an earlier version of this script, running the current
-   version again is safe — it adds new columns/tables, including
-   `required` on `tracks` and `archived` on `pieces`, renames the old
-   `costumes` table to `props` in place (your data comes with it), and updates the
-   security policies without touching your existing data.)
-3. Open **Settings → API**. You'll need two values from this page:
-   - **Project URL**
-   - **anon public** key (not the `service_role` key — that one should
-     never go in frontend code)
+   version again is safe — it renames the old `tracks` table to `roles`
+   in place, renames `costumes` to `props`, and adds new columns/tables
+   including `energy` on `pieces` and the new grouping `tracks` table,
+   all without touching your existing data.)
 
 ## 2. Turn off public sign-up and create your login
 

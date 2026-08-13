@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download, Pencil, Check, Bookmark, Save, Archive, ArchiveRestore } from "lucide-react";
+import ExcelJS from "exceljs";
+import { Plus, Trash2, X, Users, Music, Route, Shirt, ClipboardList, AlertCircle, Wand2, CheckCircle2, CircleDashed, ChevronDown, ChevronUp, LogOut, Download, Pencil, Check, Bookmark, Save, Archive, ArchiveRestore, Layers } from "lucide-react";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 import * as db from "./lib/db";
 
@@ -10,14 +11,14 @@ const fmtTime = (totalSeconds) => {
   return `${m}:${String(sec).padStart(2, "0")}`;
 };
 
-function computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds, includeOptional = true) {
+function computeCoverage(pieces, rolesByPiece, assignmentsByRole, availableIds, includeOptional = true) {
   return pieces.map(piece => {
-    const ts = tracksByPiece[piece.id] || [];
-    if (ts.length === 0) return { piece, status: "no-tracks", missing: [] };
+    const ts = rolesByPiece[piece.id] || [];
+    if (ts.length === 0) return { piece, status: "no-roles", missing: [] };
     const relevant = includeOptional ? ts : ts.filter(t => t.required !== false);
     const missing = [];
     relevant.forEach(t => {
-      const asg = assignmentsByTrack[t.id] || [];
+      const asg = assignmentsByRole[t.id] || [];
       const covered = asg.length > 0 && asg.some(a => availableIds.has(a.personId));
       if (!covered) missing.push(t);
     });
@@ -85,7 +86,7 @@ export default function CallBoard() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("builder");
-  const [data, setData] = useState({ people: [], pieces: [], tracks: [], props: [], assignments: [], castPresets: [], savedShows: [] });
+  const [data, setData] = useState({ people: [], pieces: [], roles: [], props: [], assignments: [], castPresets: [], savedShows: [], tracks: [] });
 
   const refresh = async () => {
     try {
@@ -108,22 +109,22 @@ export default function CallBoard() {
     if (session) refresh().then(() => setReady(true));
   }, [session]);
 
-  const { people, pieces, tracks, props, assignments, castPresets, savedShows } = data;
+  const { people, pieces, roles, props, assignments, castPresets, savedShows, tracks } = data;
 
   const pieceById = useMemo(() => Object.fromEntries(pieces.map(p => [p.id, p])), [pieces]);
-  const tracksByPiece = useMemo(() => {
+  const rolesByPiece = useMemo(() => {
     const m = {};
-    tracks.forEach(t => { (m[t.pieceId] = m[t.pieceId] || []).push(t); });
+    roles.forEach(t => { (m[t.pieceId] = m[t.pieceId] || []).push(t); });
     return m;
-  }, [tracks]);
+  }, [roles]);
   const propsByPiece = useMemo(() => {
     const m = {};
     props.forEach(c => { (m[c.pieceId] = m[c.pieceId] || []).push(c); });
     return m;
   }, [props]);
-  const assignmentsByTrack = useMemo(() => {
+  const assignmentsByRole = useMemo(() => {
     const m = {};
-    assignments.forEach(a => { (m[a.trackId] = m[a.trackId] || []).push(a); });
+    assignments.forEach(a => { (m[a.roleId] = m[a.roleId] || []).push(a); });
     return m;
   }, [assignments]);
   const assignmentsByPerson = useMemo(() => {
@@ -131,13 +132,13 @@ export default function CallBoard() {
     assignments.forEach(a => { (m[a.personId] = m[a.personId] || []).push(a); });
     return m;
   }, [assignments]);
-  const trackById = useMemo(() => Object.fromEntries(tracks.map(t => [t.id, t])), [tracks]);
+  const roleById = useMemo(() => Object.fromEntries(roles.map(t => [t.id, t])), [roles]);
 
-  const personHasPieceConflict = (personId, pieceId, excludeTrackId) => {
+  const personHasPieceConflict = (personId, pieceId, excludeRoleId) => {
     const theirAssignments = assignmentsByPerson[personId] || [];
     return theirAssignments.some(a => {
-      if (a.trackId === excludeTrackId) return false;
-      const t = trackById[a.trackId];
+      if (a.roleId === excludeRoleId) return false;
+      const t = roleById[a.roleId];
       return t && t.pieceId === pieceId;
     });
   };
@@ -160,10 +161,13 @@ export default function CallBoard() {
     deletePiece: run(db.deletePiece),
     updatePiece: run(db.updatePiece),
     updatePieceType: run(db.updatePieceType),
+    updatePieceEnergy: run(db.updatePieceEnergy),
     updatePieceArchived: run(db.updatePieceArchived),
-    addTrack: run(db.addTrack),
-    deleteTrack: run(db.deleteTrack),
-    updateTrackRequired: run(db.updateTrackRequired),
+    addRole: run(db.addRole),
+    deleteRole: run(db.deleteRole),
+    updateRoleRequired: run(db.updateRoleRequired),
+    updateRoleName: run(db.updateRoleName),
+    updateRoleTrack: run(db.updateRoleTrack),
     addProp: run(db.addProp),
     deleteProp: run(db.deleteProp),
     addAssignment: run(db.addAssignment),
@@ -172,6 +176,10 @@ export default function CallBoard() {
     deleteCastPreset: run(db.deleteCastPreset),
     addSavedShow: run(db.addSavedShow),
     deleteSavedShow: run(db.deleteSavedShow),
+    updateSavedShowTracks: run(db.updateSavedShowTracks),
+    addTrack: run(db.addTrack),
+    deleteTrack: run(db.deleteTrack),
+    updateTrackName: run(db.updateTrackName),
   };
 
   if (!supabaseConfigured) {
@@ -244,8 +252,8 @@ export default function CallBoard() {
       <main className="cb-main">
         {tab === "builder" && (
           <BuildShowWizard
-            people={people} pieces={pieces} tracksByPiece={tracksByPiece}
-            assignmentsByTrack={assignmentsByTrack} propsByPiece={propsByPiece}
+            people={people} pieces={pieces} rolesByPiece={rolesByPiece}
+            assignmentsByRole={assignmentsByRole} propsByPiece={propsByPiece} tracks={tracks}
             castPresets={castPresets} onSavePreset={actions.addCastPreset} onDeletePreset={actions.deleteCastPreset}
             onSaveShow={actions.addSavedShow}
           />
@@ -253,23 +261,25 @@ export default function CallBoard() {
         {tab === "people" && (
           <PeopleTab
             people={people} onAdd={actions.addPerson} onDelete={actions.deletePerson}
-            assignmentsByPerson={assignmentsByPerson} trackById={trackById} pieceById={pieceById}
+            assignmentsByPerson={assignmentsByPerson} roleById={roleById} pieceById={pieceById}
           />
         )}
         {tab === "pieces" && (
           <PiecesTab
             pieces={pieces} onAdd={actions.addPiece} onDelete={actions.deletePiece}
             onEdit={actions.updatePiece} onTypeChange={actions.updatePieceType}
+            onEnergyChange={actions.updatePieceEnergy}
             onArchiveChange={actions.updatePieceArchived}
-            tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
+            rolesByPiece={rolesByPiece} propsByPiece={propsByPiece}
           />
         )}
-        {tab === "tracks" && (
-          <TracksTab
-            pieces={pieces} tracks={tracks} onAddTrack={actions.addTrack} onDeleteTrack={actions.deleteTrack}
-            onToggleRequired={actions.updateTrackRequired}
+        {tab === "roles" && (
+          <RolesTab
+            pieces={pieces} roles={roles} onAddRole={actions.addRole} onDeleteRole={actions.deleteRole}
+            onToggleRequired={actions.updateRoleRequired} onRenameRole={actions.updateRoleName}
+            tracks={tracks} onSetRoleTrack={actions.updateRoleTrack}
             people={people} onAssignPerson={actions.addAssignment} onRemoveAssignment={actions.deleteAssignment}
-            assignmentsByTrack={assignmentsByTrack} personHasPieceConflict={personHasPieceConflict}
+            assignmentsByRole={assignmentsByRole} personHasPieceConflict={personHasPieceConflict}
           />
         )}
         {tab === "props" && (
@@ -278,17 +288,25 @@ export default function CallBoard() {
             propsByPiece={propsByPiece}
           />
         )}
+        {tab === "tracks" && (
+          <TracksTab
+            tracks={tracks} roles={roles} pieces={pieces}
+            onAdd={actions.addTrack} onDelete={actions.deleteTrack} onRename={actions.updateTrackName}
+            onSetRoleTrack={actions.updateRoleTrack}
+          />
+        )}
         {tab === "savedshows" && (
           <SavedShowsTab
-            people={people} pieces={pieces} tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+            people={people} pieces={pieces} rolesByPiece={rolesByPiece} assignmentsByRole={assignmentsByRole}
             savedShows={savedShows} onAdd={actions.addSavedShow} onDelete={actions.deleteSavedShow}
+            tracks={tracks} onSetTracks={actions.updateSavedShowTracks}
           />
         )}
         {tab === "reports" && (
           <ReportsTab
-            people={people} pieces={pieces} assignmentsByPerson={assignmentsByPerson} trackById={trackById}
-            pieceById={pieceById} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
-            assignmentsByTrack={assignmentsByTrack}
+            people={people} pieces={pieces} assignmentsByPerson={assignmentsByPerson} roleById={roleById}
+            pieceById={pieceById} rolesByPiece={rolesByPiece} propsByPiece={propsByPiece}
+            assignmentsByRole={assignmentsByRole}
           />
         )}
       </main>
@@ -331,12 +349,13 @@ function LoginScreen() {
 }
 
 const TABS = [
-  { key: "builder", label: "Build a show", icon: Wand2 },
+  { key: "savedshows", label: "Saved Shows", icon: Bookmark },
   { key: "people", label: "People", icon: Users },
   { key: "pieces", label: "Pieces", icon: Music },
-  { key: "tracks", label: "Tracks", icon: Route },
+  { key: "roles", label: "Roles", icon: Route },
+  { key: "tracks", label: "Tracks", icon: Layers },
   { key: "props", label: "Props", icon: Shirt },
-  { key: "savedshows", label: "Saved Shows", icon: Bookmark },
+  { key: "builder", label: "Build a show", icon: Wand2 },
   { key: "reports", label: "Reports", icon: ClipboardList },
 ];
 
@@ -352,7 +371,7 @@ function ToggleSwitch({ label, checked, onChange }) {
   return (
     <label className="cb-toggle">
       <input type="checkbox" className="cb-toggle-input" checked={checked} onChange={e => onChange(e.target.checked)} />
-      <span className="cb-toggle-track"><span className="cb-toggle-thumb" /></span>
+      <span className="cb-toggle-role"><span className="cb-toggle-thumb" /></span>
       <span className="cb-toggle-label">{label}</span>
     </label>
   );
@@ -376,7 +395,7 @@ function AddRow({ placeholder, onAdd, buttonLabel = "Add" }) {
 
 /* ---------------- People ---------------- */
 
-function PeopleTab({ people, onAdd, onDelete, assignmentsByPerson, trackById, pieceById }) {
+function PeopleTab({ people, onAdd, onDelete, assignmentsByPerson, roleById, pieceById }) {
   return (
     <section>
       <div className="cb-section-head"><h2>People</h2><span className="cb-count">{people.length}</span></div>
@@ -398,7 +417,7 @@ function PeopleTab({ people, onAdd, onDelete, assignmentsByPerson, trackById, pi
                 ) : (
                   <ul className="cb-taglist">
                     {theirs.map(a => {
-                      const t = trackById[a.trackId];
+                      const t = roleById[a.roleId];
                       const pc = t ? pieceById[t.pieceId] : null;
                       if (!t || !pc) return null;
                       return <li key={a.id}>{pc.name} <span className="cb-dim">— {t.name}</span></li>;
@@ -422,7 +441,13 @@ const PIECE_TYPES = [
   { value: "closer", label: "Closer" },
 ];
 
-function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, propsByPiece }) {
+const PIECE_ENERGIES = [
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onEnergyChange, onArchiveChange, rolesByPiece, propsByPiece }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(p.name);
   const [min, setMin] = useState(String(Math.floor((p.length || 0) / 60)));
@@ -480,29 +505,35 @@ function PieceCard({ p, index, onDelete, onEdit, onTypeChange, onArchiveChange, 
       <div className="cb-card-name">{p.name}</div>
       <div className="cb-card-sub">
         <span className="cb-mono cb-accent-text">{fmtTime(p.length)}</span>
-        <span className="cb-dim"> · {(tracksByPiece[p.id] || []).length} track{(tracksByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
+        <span className="cb-dim"> · {(rolesByPiece[p.id] || []).length} role{(rolesByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
         <span className="cb-dim"> · {(propsByPiece[p.id] || []).length} prop{(propsByPiece[p.id] || []).length === 1 ? "" : "s"}</span>
       </div>
-      <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
-        {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-      </select>
+      <div className="cb-piece-selects">
+        <select className="cb-select cb-type-select" value={p.type || "normal"} onChange={e => onTypeChange(p.id, e.target.value)}>
+          {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <select className="cb-select cb-type-select" value={p.energy || "Medium"} onChange={e => onEnergyChange(p.id, e.target.value)}>
+          {PIECE_ENERGIES.map(t => <option key={t.value} value={t.value}>{t.label} energy</option>)}
+        </select>
+      </div>
     </div>
   );
 }
 
-function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveChange, tracksByPiece, propsByPiece }) {
+function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onEnergyChange, onArchiveChange, rolesByPiece, propsByPiece }) {
   const [name, setName] = useState("");
   const [min, setMin] = useState("");
   const [sec, setSec] = useState("");
   const [type, setType] = useState("normal");
+  const [energy, setEnergy] = useState("Medium");
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   const add = () => {
     const n = name.trim();
     if (!n) return;
     const total = (parseInt(min || 0, 10) * 60) + parseInt(sec || 0, 10);
-    onAdd(n, total, type);
-    setName(""); setMin(""); setSec(""); setType("normal");
+    onAdd(n, total, type, energy);
+    setName(""); setMin(""); setSec(""); setType("normal"); setEnergy("Medium");
   };
 
   const activePieces = pieces.filter(p => !p.archived);
@@ -522,6 +553,9 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
         <select className="cb-select" value={type} onChange={e => setType(e.target.value)}>
           {PIECE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
+        <select className="cb-select" value={energy} onChange={e => setEnergy(e.target.value)}>
+          {PIECE_ENERGIES.map(t => <option key={t.value} value={t.value}>{t.label} energy</option>)}
+        </select>
         <button className="cb-btn cb-btn-accent" onClick={add}><Plus size={15} /> Add piece</button>
       </div>
       {pieces.length === 0 && <EmptyState text="No pieces yet. Add one above with its run time." />}
@@ -530,7 +564,7 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
         {activePieces.map((p, i) => (
           <PieceCard
             key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
-            onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
+            onEnergyChange={onEnergyChange} onArchiveChange={onArchiveChange} rolesByPiece={rolesByPiece} propsByPiece={propsByPiece}
           />
         ))}
       </div>
@@ -546,7 +580,7 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
               {archivedPieces.map((p, i) => (
                 <PieceCard
                   key={p.id} p={p} index={i} onDelete={onDelete} onEdit={onEdit} onTypeChange={onTypeChange}
-                  onArchiveChange={onArchiveChange} tracksByPiece={tracksByPiece} propsByPiece={propsByPiece}
+                  onEnergyChange={onEnergyChange} onArchiveChange={onArchiveChange} rolesByPiece={rolesByPiece} propsByPiece={propsByPiece}
                 />
               ))}
             </div>
@@ -557,70 +591,108 @@ function PiecesTab({ pieces, onAdd, onDelete, onEdit, onTypeChange, onArchiveCha
   );
 }
 
-/* ---------------- Tracks (+ assignments) ---------------- */
+/* ---------------- Roles (+ assignments) ---------------- */
 
-function PieceTracksGroup({ piece, theseTracks, expanded, onToggleExpand, newTrackName, setNewTrackName, newTrackOptional, setNewTrackOptional, addTrack, onDeleteTrack, onRemoveAssignment, onToggleRequired, people, pickPerson, setPickPerson, assignPerson, assignmentsByTrack }) {
+function RoleRow({ t, index, piece, asg, people, pickPerson, setPickPerson, assignPerson, onDeleteRole, onRemoveAssignment, onToggleRequired, onRenameRole, tracks, onSetRoleTrack }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(t.name);
+
+  const startEdit = () => { setName(t.name); setEditing(true); };
+  const save = () => {
+    const n = name.trim();
+    if (!n) return;
+    onRenameRole(t.id, n);
+    setEditing(false);
+  };
+
+  return (
+    <div className="cb-role-row">
+      <div className="cb-role-row-top">
+        <span className="cb-mono cb-cue-inline">T-{String(index + 1).padStart(2, "0")}</span>
+        {editing ? (
+          <>
+            <input className="cb-input cb-role-name-edit" value={name} onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && save()} autoFocus />
+            <button className="cb-icon-btn" onClick={save} title="Save"><Check size={14} /></button>
+            <button className="cb-icon-btn" onClick={() => setEditing(false)} title="Cancel"><X size={14} /></button>
+          </>
+        ) : (
+          <>
+            <span className="cb-role-name">{t.name}{t.required === false && <span className="cb-type-badge"> Optional</span>}</span>
+            <button className="cb-icon-btn" onClick={startEdit} title="Rename role"><Pencil size={13} /></button>
+            <button className="cb-icon-btn" onClick={() => onDeleteRole(t.id)} title="Remove role"><Trash2 size={14} /></button>
+          </>
+        )}
+      </div>
+      <div className="cb-role-people">
+        {asg.map(a => {
+          const person = people.find(pp => pp.id === a.personId);
+          return (
+            <span className="cb-chip" key={a.id}>
+              {person ? person.name : "—"}
+              <button className="cb-chip-x" onClick={() => onRemoveAssignment(a.id)}><X size={11} /></button>
+            </span>
+          );
+        })}
+        <select className="cb-select cb-select-inline" value={pickPerson[t.id] || ""}
+          onChange={e => { assignPerson(t.id, piece.id, e.target.value); setPickPerson({ ...pickPerson, [t.id]: "" }); }}>
+          <option value="">+ assign person…</option>
+          {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <ToggleSwitch label="Optional" checked={t.required === false} onChange={checked => onToggleRequired(t.id, !checked)} />
+      </div>
+      <div className="cb-role-track-row">
+        <span className="cb-report-label">Track group</span>
+        <select className="cb-select cb-select-inline" value={t.trackId || ""} onChange={e => onSetRoleTrack(t.id, e.target.value || null)}>
+          <option value="">— none —</option>
+          {tracks.map(tr => <option key={tr.id} value={tr.id}>{tr.name}</option>)}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function PieceRolesGroup({ piece, theseRoles, expanded, onToggleExpand, newRoleName, setNewRoleName, newRoleOptional, setNewRoleOptional, addRole, onDeleteRole, onRemoveAssignment, onToggleRequired, onRenameRole, tracks, onSetRoleTrack, people, pickPerson, setPickPerson, assignPerson, assignmentsByRole }) {
   return (
     <div className={"cb-piece-group" + (piece.archived ? " cb-card-archived" : "")}>
       <button className="cb-piece-group-head cb-piece-group-toggle" onClick={onToggleExpand}>
         {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         <span className="cb-piece-group-name">{piece.name}</span>
-        <span className="cb-dim">{theseTracks.length} track{theseTracks.length === 1 ? "" : "s"}</span>
+        <span className="cb-dim">{theseRoles.length} role{theseRoles.length === 1 ? "" : "s"}</span>
         <span className="cb-mono cb-dim">{fmtTime(piece.length)}</span>
       </button>
       {expanded && (
         <div className="cb-piece-group-body">
           <div className="cb-addrow">
-            <input className="cb-input" placeholder="Track name (e.g. Lead, Ensemble A)"
-              value={newTrackName[piece.id] || ""}
-              onChange={e => setNewTrackName({ ...newTrackName, [piece.id]: e.target.value })}
-              onKeyDown={e => { if (e.key === "Enter") addTrack(piece.id); }} />
+            <input className="cb-input" placeholder="Role name (e.g. Lead, Ensemble A)"
+              value={newRoleName[piece.id] || ""}
+              onChange={e => setNewRoleName({ ...newRoleName, [piece.id]: e.target.value })}
+              onKeyDown={e => { if (e.key === "Enter") addRole(piece.id); }} />
             <label className="cb-inline-checkbox">
-              <input type="checkbox" checked={!!newTrackOptional[piece.id]}
-                onChange={e => setNewTrackOptional({ ...newTrackOptional, [piece.id]: e.target.checked })} />
+              <input type="checkbox" checked={!!newRoleOptional[piece.id]}
+                onChange={e => setNewRoleOptional({ ...newRoleOptional, [piece.id]: e.target.checked })} />
               Optional
             </label>
-            <button className="cb-btn cb-btn-accent" onClick={() => addTrack(piece.id)}><Plus size={15} /> Add track</button>
+            <button className="cb-btn cb-btn-accent" onClick={() => addRole(piece.id)}><Plus size={15} /> Add role</button>
           </div>
-          {theseTracks.length === 0 && <EmptyState text="No tracks in this piece yet." />}
-          {theseTracks.map((t, i) => {
-            const asg = assignmentsByTrack[t.id] || [];
-            return (
-              <div className="cb-track-row" key={t.id}>
-                <div className="cb-track-row-top">
-                  <span className="cb-mono cb-cue-inline">T-{String(i + 1).padStart(2, "0")}</span>
-                  <span className="cb-track-name">{t.name}{t.required === false && <span className="cb-type-badge"> Optional</span>}</span>
-                  <button className="cb-icon-btn" onClick={() => onDeleteTrack(t.id)} title="Remove track"><Trash2 size={14} /></button>
-                </div>
-                <div className="cb-track-people">
-                  {asg.map(a => {
-                    const person = people.find(pp => pp.id === a.personId);
-                    return (
-                      <span className="cb-chip" key={a.id}>
-                        {person ? person.name : "—"}
-                        <button className="cb-chip-x" onClick={() => onRemoveAssignment(a.id)}><X size={11} /></button>
-                      </span>
-                    );
-                  })}
-                  <select className="cb-select cb-select-inline" value={pickPerson[t.id] || ""}
-                    onChange={e => { assignPerson(t.id, piece.id, e.target.value); setPickPerson({ ...pickPerson, [t.id]: "" }); }}>
-                    <option value="">+ assign person…</option>
-                    {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <ToggleSwitch label="Optional" checked={t.required === false} onChange={checked => onToggleRequired(t.id, !checked)} />
-                </div>
-              </div>
-            );
-          })}
+          {theseRoles.length === 0 && <EmptyState text="No roles in this piece yet." />}
+          {theseRoles.map((t, i) => (
+            <RoleRow
+              key={t.id} t={t} index={i} piece={piece} asg={assignmentsByRole[t.id] || []}
+              people={people} pickPerson={pickPerson} setPickPerson={setPickPerson} assignPerson={assignPerson}
+              onDeleteRole={onDeleteRole} onRemoveAssignment={onRemoveAssignment} onToggleRequired={onToggleRequired}
+              onRenameRole={onRenameRole} tracks={tracks} onSetRoleTrack={onSetRoleTrack}
+            />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired, people, onAssignPerson, onRemoveAssignment, assignmentsByTrack, personHasPieceConflict }) {
-  const [newTrackName, setNewTrackName] = useState({});
-  const [newTrackOptional, setNewTrackOptional] = useState({});
+function RolesTab({ pieces, roles, onAddRole, onDeleteRole, onToggleRequired, onRenameRole, tracks, onSetRoleTrack, people, onAssignPerson, onRemoveAssignment, assignmentsByRole, personHasPieceConflict }) {
+  const [newRoleName, setNewRoleName] = useState({});
+  const [newRoleOptional, setNewRoleOptional] = useState({});
   const [pickPerson, setPickPerson] = useState({});
   const [conflictMsg, setConflictMsg] = useState(null);
   const [expandedIds, setExpandedIds] = useState(new Set());
@@ -632,46 +704,46 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired
     setExpandedIds(next);
   };
 
-  const addTrack = (pieceId) => {
-    const nm = (newTrackName[pieceId] || "").trim();
+  const addRole = (pieceId) => {
+    const nm = (newRoleName[pieceId] || "").trim();
     if (!nm) return;
-    onAddTrack(nm, pieceId, !newTrackOptional[pieceId]);
-    setNewTrackName({ ...newTrackName, [pieceId]: "" });
-    setNewTrackOptional({ ...newTrackOptional, [pieceId]: false });
+    onAddRole(nm, pieceId, !newRoleOptional[pieceId]);
+    setNewRoleName({ ...newRoleName, [pieceId]: "" });
+    setNewRoleOptional({ ...newRoleOptional, [pieceId]: false });
   };
 
-  const assignPerson = (trackId, pieceId, personId) => {
+  const assignPerson = (roleId, pieceId, personId) => {
     if (!personId) return;
-    if (personHasPieceConflict(personId, pieceId, trackId)) {
+    if (personHasPieceConflict(personId, pieceId, roleId)) {
       const p = people.find(pp => pp.id === personId);
-      setConflictMsg(`${p ? p.name : "That person"} is already on another track in this piece.`);
+      setConflictMsg(`${p ? p.name : "That person"} is already on another role in this piece.`);
       setTimeout(() => setConflictMsg(null), 3500);
       return;
     }
-    onAssignPerson(personId, trackId);
+    onAssignPerson(personId, roleId);
   };
 
   if (pieces.length === 0) {
-    return <section><div className="cb-section-head"><h2>Tracks</h2></div><EmptyState text="Add a piece first — tracks belong to a piece." /></section>;
+    return <section><div className="cb-section-head"><h2>Roles</h2></div><EmptyState text="Add a piece first — roles belong to a piece." /></section>;
   }
 
   const activePieces = pieces.filter(p => !p.archived);
   const archivedPieces = pieces.filter(p => p.archived);
 
   const groupProps = {
-    newTrackName, setNewTrackName, newTrackOptional, setNewTrackOptional,
-    addTrack, onDeleteTrack, onRemoveAssignment, onToggleRequired, people, pickPerson, setPickPerson,
-    assignPerson, assignmentsByTrack,
+    newRoleName, setNewRoleName, newRoleOptional, setNewRoleOptional,
+    addRole, onDeleteRole, onRemoveAssignment, onToggleRequired, onRenameRole, tracks, onSetRoleTrack,
+    people, pickPerson, setPickPerson, assignPerson, assignmentsByRole,
   };
 
   return (
     <section>
-      <div className="cb-section-head"><h2>Tracks</h2><span className="cb-count">{tracks.length}</span></div>
+      <div className="cb-section-head"><h2>Roles</h2><span className="cb-count">{roles.length}</span></div>
       {conflictMsg && <div className="cb-conflict"><AlertCircle size={14} /> {conflictMsg}</div>}
       <div className="cb-piece-groups">
         {activePieces.map(piece => (
-          <PieceTracksGroup
-            key={piece.id} piece={piece} theseTracks={tracks.filter(t => t.pieceId === piece.id)}
+          <PieceRolesGroup
+            key={piece.id} piece={piece} theseRoles={roles.filter(t => t.pieceId === piece.id)}
             expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
             {...groupProps}
           />
@@ -687,8 +759,8 @@ function TracksTab({ pieces, tracks, onAddTrack, onDeleteTrack, onToggleRequired
           {archiveOpen && (
             <div className="cb-piece-groups cb-archive-grid">
               {archivedPieces.map(piece => (
-                <PieceTracksGroup
-                  key={piece.id} piece={piece} theseTracks={tracks.filter(t => t.pieceId === piece.id)}
+                <PieceRolesGroup
+                  key={piece.id} piece={piece} theseRoles={roles.filter(t => t.pieceId === piece.id)}
                   expanded={expandedIds.has(piece.id)} onToggleExpand={() => toggleExpand(piece.id)}
                   {...groupProps}
                 />
@@ -800,7 +872,7 @@ function PropsTab({ pieces, props, onAdd, onDelete, propsByPiece }) {
 
 /* ---------------- Reports ---------------- */
 
-function ReportsTab({ people, pieces, assignmentsByPerson, trackById, pieceById, propsByPiece, tracksByPiece, assignmentsByTrack }) {
+function ReportsTab({ people, pieces, assignmentsByPerson, roleById, pieceById, propsByPiece, rolesByPiece, assignmentsByRole }) {
   const [reportTab, setReportTab] = useState("coverage");
   return (
     <section>
@@ -811,15 +883,15 @@ function ReportsTab({ people, pieces, assignmentsByPerson, trackById, pieceById,
         <button className={"cb-subtab" + (reportTab === "runtime" ? " cb-subtab-active" : "")} onClick={() => setReportTab("runtime")}>Run time</button>
         <button className={"cb-subtab" + (reportTab === "cast" ? " cb-subtab-active" : "")} onClick={() => setReportTab("cast")}>Who's in what</button>
       </div>
-      {reportTab === "coverage" && <CastCoverageReport people={people} pieces={pieces} tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack} />}
-      {reportTab === "cast" && <CastReport people={people} assignmentsByPerson={assignmentsByPerson} trackById={trackById} pieceById={pieceById} />}
+      {reportTab === "coverage" && <CastCoverageReport people={people} pieces={pieces} rolesByPiece={rolesByPiece} assignmentsByRole={assignmentsByRole} />}
+      {reportTab === "cast" && <CastReport people={people} assignmentsByPerson={assignmentsByPerson} roleById={roleById} pieceById={pieceById} />}
       {reportTab === "runtime" && <RuntimeReport pieces={pieces} />}
       {reportTab === "prop" && <PropReport pieces={pieces} propsByPiece={propsByPiece} />}
     </section>
   );
 }
 
-function CastReport({ people, assignmentsByPerson, trackById, pieceById }) {
+function CastReport({ people, assignmentsByPerson, roleById, pieceById }) {
   if (people.length === 0) return <EmptyState text="Add people first to see who's cast where." />;
   return (
     <div className="cb-report">
@@ -836,7 +908,7 @@ function CastReport({ people, assignmentsByPerson, trackById, pieceById }) {
                 ) : (
                   <ul className="cb-taglist">
                     {theirs.map(a => {
-                      const t = trackById[a.trackId];
+                      const t = roleById[a.roleId];
                       const pc = t ? pieceById[t.pieceId] : null;
                       if (!t || !pc) return null;
                       return <li key={a.id}>{pc.name} <span className="cb-dim">— {t.name}</span></li>;
@@ -944,15 +1016,15 @@ function PeoplePicker({ people, selected, setSelected }) {
   );
 }
 
-function CastCoverageReport({ people, pieces, tracksByPiece, assignmentsByTrack }) {
+function CastCoverageReport({ people, pieces, rolesByPiece, assignmentsByRole }) {
   const [selected, setSelected] = useState({});
   if (people.length === 0) return <EmptyState text="Add people first, then pick who's available to see what you can perform." />;
-  if (pieces.length === 0) return <EmptyState text="Add pieces and tracks first." />;
+  if (pieces.length === 0) return <EmptyState text="Add pieces and roles first." />;
   const availableIds = new Set(Object.keys(selected).filter(id => selected[id]));
-  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, availableIds);
+  const coverage = computeCoverage(pieces, rolesByPiece, assignmentsByRole, availableIds);
   const doable = coverage.filter(c => c.status === "doable");
   const missing = coverage.filter(c => c.status === "missing");
-  const noTracks = coverage.filter(c => c.status === "no-tracks");
+  const noRoles = coverage.filter(c => c.status === "no-roles");
   const anySelected = availableIds.size > 0;
   return (
     <div className="cb-report">
@@ -990,14 +1062,14 @@ function CastCoverageReport({ people, pieces, tracksByPiece, assignmentsByTrack 
               </div>
             </div>
           )}
-          {noTracks.length > 0 && (
+          {noRoles.length > 0 && (
             <div className="cb-coverage-block">
-              <div className="cb-coverage-head"><span className="cb-dim">No tracks defined yet ({noTracks.length})</span></div>
+              <div className="cb-coverage-head"><span className="cb-dim">No roles defined yet ({noRoles.length})</span></div>
               <div className="cb-card-grid">
-                {noTracks.map(c => (
+                {noRoles.map(c => (
                   <div className="cb-card" key={c.piece.id}>
                     <div className="cb-card-name">{c.piece.name}</div>
-                    <div className="cb-card-sub cb-dim">Add tracks to this piece to check coverage</div>
+                    <div className="cb-card-sub cb-dim">Add roles to this piece to check coverage</div>
                   </div>
                 ))}
               </div>
@@ -1020,8 +1092,8 @@ function parseMinutes(str) {
 
 // Openers/closers are fixed to the first/last slot; the remaining budget is
 // filled with Normal-type pieces via the same subset-sum search used elsewhere.
-function buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, noOpener, noCloser, includeOptional, maxResults = 10) {
-  const coverage = computeCoverage(pieces, tracksByPiece, assignmentsByTrack, castIds, includeOptional);
+function buildRunningOrders(pieces, rolesByPiece, assignmentsByRole, castIds, targetSeconds, noOpener, noCloser, includeOptional, maxResults = 10) {
+  const coverage = computeCoverage(pieces, rolesByPiece, assignmentsByRole, castIds, includeOptional);
   const doable = coverage.filter(c => c.status === "doable").map(c => c.piece);
   const missing = coverage.filter(c => c.status === "missing").map(c => c.piece);
 
@@ -1063,14 +1135,19 @@ function buildRunningOrders(pieces, tracksByPiece, assignmentsByTrack, castIds, 
   return { doable, missing, options: results.slice(0, maxResults), blocked: null };
 }
 
-function csvCell(v) {
-  const s = String(v == null ? "" : v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-function csvRow(cells) { return cells.map(csvCell).join(","); }
+const ENERGY_COLORS = { High: "FFF4A9A0", Medium: "FFFDE9B0", Low: "FFC8E6C9" };
+const NAMED_TRACK_COLORS = {
+  red: "FFF4A9A0", orange: "FFFBD1A2", yellow: "FFFCEBA0", green: "FFB7E1B0",
+  blue: "FFAFD4EE", purple: "FFD3C6EA", pink: "FFF6C7DE",
+};
 
-function downloadCsv(filename, content) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+function trackHeaderColor(name) {
+  return NAMED_TRACK_COLORS[(name || "").trim().toLowerCase()] || "FF808080";
+}
+
+async function downloadXlsxBuffer(filename, workbook) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1081,56 +1158,82 @@ function downloadCsv(filename, content) {
   URL.revokeObjectURL(url);
 }
 
-function exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, propsByPiece, castIds) {
+// Builds the "cast tracks" style show sheet: rows are pieces in running
+// order, columns are Tracks, each cell shows the Role that Track's
+// performer plays in that piece. castIds filters which assignments count
+// as "in this show" — pass an empty Set to show every assignment.
+async function exportShowXlsx(filenameBase, pieces, rolesByPiece, assignmentsByRole, allTracks, people, castIds) {
   const personById = Object.fromEntries(people.map(p => [p.id, p]));
-  const lines = [];
+  const filterByCast = castIds && castIds.size > 0;
 
-  lines.push(csvRow(["Running Order"]));
-  lines.push(csvRow(["Order", "Sketch", "Type", "Runtime"]));
-  option.pieces.forEach((p, i) => {
-    lines.push(csvRow([i + 1, p.name, p.type || "normal", fmtTime(p.length)]));
+  const usedTrackIds = new Set();
+  pieces.forEach(p => {
+    (rolesByPiece[p.id] || []).forEach(r => { if (r.trackId) usedTrackIds.add(r.trackId); });
   });
-  lines.push("");
+  const tracksUsed = allTracks.filter(t => usedTrackIds.has(t.id));
 
-  lines.push(csvRow(["Cast & Tracks"]));
-  lines.push(csvRow(["Sketch", "Track", "Person"]));
-  option.pieces.forEach(p => {
-    const ts = tracksByPiece[p.id] || [];
-    ts.forEach(t => {
-      const asg = (assignmentsByTrack[t.id] || []).filter(a => castIds.has(a.personId));
-      if (asg.length === 0) {
-        lines.push(csvRow([p.name, t.name, ""]));
-      } else {
-        asg.forEach(a => {
-          const person = personById[a.personId];
-          lines.push(csvRow([p.name, t.name, person ? person.name : ""]));
-        });
-      }
+  const trackPeopleNames = tracksUsed.map(t => {
+    const names = new Set();
+    pieces.forEach(p => {
+      (rolesByPiece[p.id] || []).filter(r => r.trackId === t.id).forEach(r => {
+        let asg = assignmentsByRole[r.id] || [];
+        if (filterByCast) asg = asg.filter(a => castIds.has(a.personId));
+        asg.forEach(a => { const person = personById[a.personId]; if (person) names.add(person.name); });
+      });
     });
+    return Array.from(names).join(" / ");
   });
-  lines.push("");
 
-  lines.push(csvRow(["Props"]));
-  lines.push(csvRow(["Sketch", "Prop Item"]));
-  option.pieces.forEach(p => {
-    const items = propsByPiece[p.id] || [];
-    if (items.length === 0) {
-      lines.push(csvRow([p.name, ""]));
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Running Order");
+
+  const leadCols = ["#", "Energy", "Piece", "Start", "Length"];
+  const headerRow = sheet.addRow([...leadCols, ...tracksUsed.map(t => t.name)]);
+  headerRow.eachCell((cell, colNumber) => {
+    cell.font = { bold: true, color: { argb: colNumber > leadCols.length ? "FFFFFFFF" : "FF17151A" } };
+    if (colNumber > leadCols.length) {
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: trackHeaderColor(tracksUsed[colNumber - leadCols.length - 1].name) } };
     } else {
-      items.forEach(c => lines.push(csvRow([p.name, c.name])));
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE5E5E5" } };
     }
   });
 
-  downloadCsv(`running-order-${fmtTime(option.total).replace(":", "m")}s.csv`, lines.join("\n"));
+  const subHeaderRow = sheet.addRow([...leadCols.map(() => ""), ...trackPeopleNames]);
+  subHeaderRow.eachCell(cell => { cell.font = { italic: true, size: 10 }; });
+
+  let elapsed = 0;
+  pieces.forEach((p, i) => {
+    const rowValues = [i + 1, "", p.name, fmtTime(elapsed), fmtTime(p.length)];
+    tracksUsed.forEach(t => {
+      const rolesHere = (rolesByPiece[p.id] || []).filter(r => r.trackId === t.id);
+      rowValues.push(rolesHere.map(r => r.name).join(" / "));
+    });
+    const row = sheet.addRow(rowValues);
+    row.getCell(3).font = { bold: true };
+    const energyColor = ENERGY_COLORS[p.energy];
+    if (energyColor) {
+      row.getCell(2).fill = { type: "pattern", pattern: "solid", fgColor: { argb: energyColor } };
+    }
+    elapsed += (p.length || 0);
+  });
+
+  sheet.columns = [
+    { width: 4 }, { width: 8 }, { width: 30 }, { width: 9 }, { width: 9 },
+    ...tracksUsed.map(() => ({ width: 18 })),
+  ];
+  sheet.views = [{ state: "frozen", ySplit: 2 }];
+
+  await downloadXlsxBuffer(`${filenameBase}.xlsx`, workbook);
 }
 
 const TYPE_BADGE_LABEL = { opener: "Opener", closer: "Closer" };
 
-function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, propsByPiece, people, castIds, onSaveShow }) {
+function RunningOrderCard({ option, index, rolesByPiece, assignmentsByRole, propsByPiece, tracks, people, castIds, onSaveShow }) {
   const [showProps, setShowProps] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showName, setShowName] = useState("");
   const [saved, setSaved] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const propMap = {};
   option.pieces.forEach(p => { propMap[p.id] = propsByPiece[p.id] || []; });
   const totalProps = Object.values(propMap).reduce((s, arr) => s + arr.length, 0);
@@ -1142,6 +1245,15 @@ function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, pr
     setSaving(false);
     setShowName("");
     setSaved(true);
+  };
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      await exportShowXlsx(`running-order-${fmtTime(option.total).replace(":", "m")}s`, option.pieces, rolesByPiece, assignmentsByRole, tracks, people, castIds);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -1172,11 +1284,8 @@ function RunningOrderCard({ option, index, tracksByPiece, assignmentsByTrack, pr
           {totalProps === 0 && <span className="cb-dim">No props logged for this lineup.</span>}
         </div>
       )}
-      <button
-        className="cb-btn cb-export-btn"
-        onClick={() => exportRunningOrderCsv(option, tracksByPiece, assignmentsByTrack, people, propsByPiece, castIds)}
-      >
-        <Download size={14} /> Export CSV
+      <button className="cb-btn cb-export-btn" onClick={doExport} disabled={exporting}>
+        <Download size={14} /> {exporting ? "Exporting…" : "Export Excel"}
       </button>
       {saving ? (
         <div className="cb-save-show-row">
@@ -1261,7 +1370,7 @@ function CastPresetPanel({ people, castIds, presets, onSave, onDelete, onLoad })
   );
 }
 
-function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, propsByPiece, castPresets, onSavePreset, onDeletePreset, onSaveShow }) {
+function BuildShowWizard({ people, pieces, rolesByPiece, assignmentsByRole, propsByPiece, tracks, castPresets, onSavePreset, onDeletePreset, onSaveShow }) {
   const [step, setStep] = useState(1);
   const [castIds, setCastIds] = useState(new Set());
   const [runtimeInput, setRuntimeInput] = useState("");
@@ -1297,7 +1406,7 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, pr
   };
 
   const built = step === 3
-    ? buildRunningOrders(activePieces, tracksByPiece, assignmentsByTrack, castIds, targetSeconds, !openerOn, !closerOn, optionalOn, 10)
+    ? buildRunningOrders(activePieces, rolesByPiece, assignmentsByRole, castIds, targetSeconds, !openerOn, !closerOn, optionalOn, 10)
     : null;
 
   return (
@@ -1352,7 +1461,7 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, pr
           <div className="cb-toggle-row">
             <ToggleSwitch label="Opener" checked={openerOn} onChange={setOpenerOn} />
             <ToggleSwitch label="Closer" checked={closerOn} onChange={setCloserOn} />
-            <ToggleSwitch label="Include Optional Tracks" checked={optionalOn} onChange={setOptionalOn} />
+            <ToggleSwitch label="Include Optional Roles" checked={optionalOn} onChange={setOptionalOn} />
           </div>
 
           {built.blocked === "opener" && (
@@ -1371,8 +1480,8 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, pr
                 {built.options.map((opt, i) => (
                   <RunningOrderCard
                     key={i} option={opt} index={i}
-                    tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
-                    propsByPiece={propsByPiece} people={people} castIds={castIds}
+                    rolesByPiece={rolesByPiece} assignmentsByRole={assignmentsByRole}
+                    propsByPiece={propsByPiece} tracks={tracks} people={people} castIds={castIds}
                     onSaveShow={onSaveShow}
                   />
                 ))}
@@ -1390,6 +1499,108 @@ function BuildShowWizard({ people, pieces, tracksByPiece, assignmentsByTrack, pr
             <button className="cb-btn" onClick={() => setStep(2)}>Back</button>
             <button className="cb-btn" onClick={startOver}>Start over</button>
           </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ---------------- Tracks (role-grouping entity) ---------------- */
+
+function TrackCard({ track, rolesInTrack, pieceById, onDelete, onRename, roleOptions, onAddRole, onRemoveRole }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(track.name);
+
+  const startEdit = () => { setName(track.name); setEditing(true); };
+  const save = () => {
+    const n = name.trim();
+    if (!n) return;
+    onRename(track.id, n);
+    setEditing(false);
+  };
+
+  return (
+    <div className="cb-card">
+      <div className="cb-card-top">
+        {editing ? (
+          <>
+            <input className="cb-input cb-edit-name" value={name} onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && save()} autoFocus />
+            <div className="cb-card-edit-actions">
+              <button className="cb-icon-btn" onClick={save} title="Save"><Check size={14} /></button>
+              <button className="cb-icon-btn" onClick={() => setEditing(false)} title="Cancel"><X size={14} /></button>
+            </div>
+          </>
+        ) : (
+          <>
+            <span className="cb-card-name">{track.name}</span>
+            <div className="cb-card-edit-actions">
+              <button className="cb-icon-btn" onClick={startEdit} title="Rename track"><Pencil size={13} /></button>
+              <button className="cb-icon-btn" onClick={() => onDelete(track.id)} title="Delete track"><Trash2 size={14} /></button>
+            </div>
+          </>
+        )}
+      </div>
+      {rolesInTrack.length === 0 ? (
+        <EmptyState text="No roles grouped into this track yet." />
+      ) : (
+        <ul className="cb-taglist">
+          {rolesInTrack.map(r => {
+            const piece = pieceById[r.pieceId];
+            return (
+              <li key={r.id} className="cb-order-item">
+                <span>{r.name} <span className="cb-dim">— {piece ? piece.name : "?"}</span></span>
+                <button className="cb-chip-x" onClick={() => onRemoveRole(r.id)}><X size={11} /></button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <select className="cb-input cb-select-full cb-track-add-role" value=""
+        onChange={e => e.target.value && onAddRole(e.target.value)}>
+        <option value="">+ add a role to this track…</option>
+        {roleOptions.map(r => {
+          const piece = pieceById[r.pieceId];
+          return <option key={r.id} value={r.id}>{r.name} — {piece ? piece.name : "?"}</option>;
+        })}
+      </select>
+    </div>
+  );
+}
+
+function TracksTab({ tracks, roles, pieces, onAdd, onDelete, onRename, onSetRoleTrack }) {
+  const [newName, setNewName] = useState("");
+
+  const pieceById = Object.fromEntries(pieces.map(p => [p.id, p]));
+
+  const add = () => {
+    const n = newName.trim();
+    if (!n) return;
+    onAdd(n);
+    setNewName("");
+  };
+
+  return (
+    <section>
+      <div className="cb-section-head"><h2>Tracks</h2><span className="cb-count">{tracks.length}</span></div>
+      <p className="cb-report-lede">Group roles together — e.g. roles meant for the same performer across different pieces.</p>
+      <AddRow placeholder="Track name" onAdd={n => onAdd(n)} buttonLabel="Add track" />
+      {tracks.length === 0 ? (
+        <EmptyState text="No tracks yet. Add one above, then group roles into it." />
+      ) : (
+        <div className="cb-card-grid">
+          {tracks.map(track => {
+            const rolesInTrack = roles.filter(r => r.trackId === track.id);
+            const roleOptions = roles.filter(r => r.trackId !== track.id);
+            return (
+              <TrackCard
+                key={track.id} track={track} rolesInTrack={rolesInTrack} pieceById={pieceById}
+                onDelete={onDelete} onRename={onRename} roleOptions={roleOptions}
+                onAddRole={(roleId) => onSetRoleTrack(roleId, track.id)}
+                onRemoveRole={(roleId) => onSetRoleTrack(roleId, null)}
+              />
+            );
+          })}
         </div>
       )}
     </section>
@@ -1431,13 +1642,28 @@ function PieceDropdownPicker({ pieces, orderedIds, onAdd, onRemove, pieceById })
   );
 }
 
-function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, potentialCastIds, includeOptional, onDelete }) {
+function SavedShowCard({ show, pieceById, rolesByPiece, assignmentsByRole, potentialCastIds, includeOptional, onDelete, tracks, onSetTracks, people }) {
   const [expanded, setExpanded] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const showPieces = show.pieceIds.map(id => pieceById[id]).filter(Boolean);
   const total = showPieces.reduce((s, p) => s + (p.length || 0), 0);
+  const linkedTracks = (show.trackIds || []).map(id => tracks.find(t => t.id === id)).filter(Boolean);
+  const availableTracks = tracks.filter(t => !(show.trackIds || []).includes(t.id));
+
+  const addTrack = (trackId) => onSetTracks(show.id, [...(show.trackIds || []), trackId]);
+  const removeTrack = (trackId) => onSetTracks(show.id, (show.trackIds || []).filter(id => id !== trackId));
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      await exportShowXlsx(show.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "saved-show", showPieces, rolesByPiece, assignmentsByRole, tracks, people, potentialCastIds);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const coverage = potentialCastIds.size > 0
-    ? computeCoverage(showPieces, tracksByPiece, assignmentsByTrack, potentialCastIds, includeOptional)
+    ? computeCoverage(showPieces, rolesByPiece, assignmentsByRole, potentialCastIds, includeOptional)
     : null;
   const coverageByPieceId = {};
   if (coverage) coverage.forEach(c => { coverageByPieceId[c.piece.id] = c; });
@@ -1461,6 +1687,23 @@ function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, pot
             : <span className="cb-coverage-bad"> · Missing {missingCount}</span>
         )}
       </div>
+      {linkedTracks.length > 0 && (
+        <div className="cb-chiplist cb-saved-show-tracks">
+          {linkedTracks.map(t => (
+            <span className="cb-chip" key={t.id}>{t.name}<button className="cb-chip-x" onClick={() => removeTrack(t.id)}><X size={11} /></button></span>
+          ))}
+        </div>
+      )}
+      {availableTracks.length > 0 && (
+        <select className="cb-select cb-select-full cb-saved-show-track-add" value=""
+          onChange={e => e.target.value && addTrack(e.target.value)}>
+          <option value="">+ link a track…</option>
+          {availableTracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      )}
+      <button className="cb-btn cb-export-btn" onClick={doExport} disabled={exporting}>
+        <Download size={14} /> {exporting ? "Exporting…" : "Export Excel"}
+      </button>
       {expanded && (
         <ul className="cb-taglist cb-show-piece-list cb-saved-show-list">
           {showPieces.map(p => {
@@ -1484,7 +1727,7 @@ function SavedShowCard({ show, pieceById, tracksByPiece, assignmentsByTrack, pot
   );
 }
 
-function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, savedShows, onAdd, onDelete }) {
+function SavedShowsTab({ people, pieces, rolesByPiece, assignmentsByRole, savedShows, onAdd, onDelete, tracks, onSetTracks }) {
   const [orderedIds, setOrderedIds] = useState([]);
   const [showName, setShowName] = useState("");
   const [potentialCastIds, setPotentialCastIds] = useState(new Set());
@@ -1515,7 +1758,7 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
         <p className="cb-report-lede">Add potential cast members to see which saved shows they can fully cover — click a show below to see exactly what's missing.</p>
         <CastDropdownPicker people={people} castIds={potentialCastIds} onAdd={addToCast} onRemove={removeFromCast} />
         <div className="cb-toggle-row">
-          <ToggleSwitch label="Include Optional Tracks" checked={includeOptional} onChange={setIncludeOptional} />
+          <ToggleSwitch label="Include Optional Roles" checked={includeOptional} onChange={setIncludeOptional} />
         </div>
       </div>
 
@@ -1538,9 +1781,10 @@ function SavedShowsTab({ people, pieces, tracksByPiece, assignmentsByTrack, save
           {savedShows.map(show => (
             <SavedShowCard
               key={show.id} show={show} pieceById={pieceById}
-              tracksByPiece={tracksByPiece} assignmentsByTrack={assignmentsByTrack}
+              rolesByPiece={rolesByPiece} assignmentsByRole={assignmentsByRole}
               includeOptional={includeOptional}
               potentialCastIds={potentialCastIds} onDelete={onDelete}
+              tracks={tracks} onSetTracks={onSetTracks} people={people}
             />
           ))}
         </div>
@@ -1638,10 +1882,10 @@ const CSS = `
 .cb-piece-group-body { margin-top: 12px; }
 .cb-piece-group-name { font-family: 'Oswald', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
 
-.cb-track-row { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
-.cb-track-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cb-track-name { font-weight: 600; font-size: 13.5px; flex: 1; }
-.cb-track-people { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cb-role-row { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; }
+.cb-role-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cb-role-name { font-weight: 600; font-size: 13.5px; flex: 1; }
+.cb-role-people { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
 .cb-chip { display: inline-flex; align-items: center; gap: 5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 4px 6px 4px 10px; font-size: 12.5px; }
 .cb-chip-static { padding-right: 10px; }
@@ -1708,11 +1952,11 @@ const CSS = `
 .cb-toggle-row { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 16px; }
 .cb-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12.5px; }
 .cb-toggle-input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.cb-toggle-track { width: 34px; height: 18px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); position: relative; transition: background 0.15s ease, border-color 0.15s ease; flex-shrink: 0; }
+.cb-toggle-role { width: 34px; height: 18px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); position: relative; transition: background 0.15s ease, border-color 0.15s ease; flex-shrink: 0; }
 .cb-toggle-thumb { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-dim); transition: transform 0.15s ease, background 0.15s ease; }
-.cb-toggle-input:checked + .cb-toggle-track { background: var(--accent); border-color: var(--accent); }
-.cb-toggle-input:checked + .cb-toggle-track .cb-toggle-thumb { transform: translateX(16px); background: #1a1408; }
-.cb-toggle-input:focus-visible + .cb-toggle-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cb-toggle-input:checked + .cb-toggle-role { background: var(--accent); border-color: var(--accent); }
+.cb-toggle-input:checked + .cb-toggle-role .cb-toggle-thumb { transform: translateX(16px); background: #1a1408; }
+.cb-toggle-input:focus-visible + .cb-toggle-role { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cb-toggle-label { color: var(--text); }
 
 .cb-inline-checkbox { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; }
@@ -1741,6 +1985,16 @@ const CSS = `
 .cb-archive-section { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
 .cb-archive-toggle { font-family: 'Oswald', sans-serif; text-transform: uppercase; letter-spacing: 0.03em; font-size: 12.5px; }
 .cb-archive-grid { margin-top: 14px; }
+
+.cb-piece-selects { display: flex; gap: 8px; margin-top: 10px; }
+.cb-piece-selects .cb-type-select { margin-top: 0; }
+
+.cb-role-name-edit { flex: 1; margin-right: 6px; }
+.cb-role-track-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+
+.cb-track-add-role { margin-top: 12px; }
+.cb-saved-show-tracks { margin-top: 10px; }
+.cb-saved-show-track-add { margin-top: 8px; }
 
 @media (max-width: 560px) {
   .cb-title { font-size: 24px; }
